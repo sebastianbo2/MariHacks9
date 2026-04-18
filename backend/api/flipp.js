@@ -22,7 +22,7 @@ export function generate_sid() {
  */
 export async function getFlyersByPostalCode(postalCode) {
   const sid = generate_sid();
-  const url = `https://flyers-ng.flippback.com/api/flipp/data?locale=en&postal_code=${postalCode}&sid=${sid}`;
+  const url = `${process.env.FLYER_API_URL}data?locale=en&postal_code=${postalCode}&sid=${sid}`;
   try {
     const resp = await axios.get(url);
     return resp;
@@ -84,7 +84,7 @@ Return flyer items for a given flyer id
 export async function getFlyerItems(flyerId) {
   const sid = generate_sid();
 
-  const url = `https://flyers-ng.flippback.com/api/flipp/flyers/${flyerId}/flyer_items?locale=en&sid=${sid}`;
+  const url = `${process.env.FLYER_API_URL}flyers/${flyerId}/flyer_items?locale=en&sid=${sid}`;
   try {
     const resp = await axios.get(url);
     return resp;
