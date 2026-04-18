@@ -16,7 +16,7 @@ router.post("/recipes", async (req, res) => {
   try {
     const {
       userRequest,
-      pantryItems = ["salt", "pepper", "vegetable oil", "water"],
+      pantryItems,
       genericIngredientsMarkdown = genericIngredients,
       postcode,
       mealsPerFlyer = 3,
@@ -39,6 +39,7 @@ router.post("/recipes", async (req, res) => {
     try {
       flyerItems = await getAllGroceries(normalizedPostcode);
     } catch {
+      console.log("Fallback: sample data ingredients")
       flyerItems = ingredients;
     }
 

@@ -323,8 +323,8 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
 
 export async function generateOptimizedMealPlan({
   userRequest,
-  pantryItems = ["salt", "pepper", "vegetable oil", "water"],
-  flyerItems = [],
+  pantryItems,
+  flyerItems,
   genericIngredientsMarkdown = "",
   recipeCount = 3,
 }) {
