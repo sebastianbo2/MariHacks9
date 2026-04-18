@@ -56,10 +56,32 @@ function formatDistance(km: number): string {
 }
 
 // ---------------------------------------------------------------------------
-// Nominatim reverse geocode → full address string
-// Returns something like "IGA, 6400, Rue Sherbrooke, Verdun, Montréal"
-// We then pass that as the query to Google Maps so it resolves the exact spot.
-// Rate limit: 1 req/sec — we stagger calls with a small delay.
+// Strip internal prefixes injected by the backend engine so they never
+// leak into the UI. e.g. "GENERIC: Olive Oil" → "Olive Oil",
+// "PANTRY: Salt" → "Salt", "CLIQUEZ ICI…" → ingredient.name fallback.
+// ---------------------------------------------------------------------------
+function cleanSourceName(sourceItemName: string, fallback: string): string {
+  if (!sourceItemName) return fallback;
+  // Strip known prefixes
+  const stripped = sourceItemName
+    .replace(/^(GENERIC|PANTRY|SALE):\s*/i, "")
+    .trim();
+  // If what remains looks like a French call-to-action / URL / junk, use fallback
+  if (
+    !stripped ||
+    /cliquez/i.test(stripped) ||
+    /^https?:\/\//i.test(stripped) ||
+    stripped.length < 2
+  ) {
+    return fallback;
+  }
+  return stripped;
+}
+
+// ---------------------------------------------------------------------------
+// Nominatim reverse geocode → full civic address string.
+// We pass this to Google Maps so it resolves the exact store listing
+// rather than doing a broad chain-wide search.
 // ---------------------------------------------------------------------------
 async function reverseGeocode(lat: number, lon: number): Promise<string | null> {
   try {
@@ -69,38 +91,31 @@ async function reverseGeocode(lat: number, lon: number): Promise<string | null> 
     );
     if (!res.ok) return null;
     const data = await res.json();
-    // Prefer the display_name which includes full civic address
     return data?.display_name ?? null;
   } catch {
     return null;
   }
 }
 
-// Build a Google Maps search URL using the full address from Nominatim.
-// With a precise address as the query, Maps resolves to the exact listing.
-function googleMapsUrl(fullAddress: string, lat: number, lon: number): string {
-  const q = encodeURIComponent(fullAddress);
-  // The ll= param centers the map; combined with a precise address query
-  // Google Maps reliably opens the exact location rather than a broad search.
-  return `https://www.google.com/maps/search/?api=1&query=${q}`;
+function googleMapsUrl(query: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
 }
 
-function openMaps(fullAddress: string, lat: number, lon: number) {
-  window.open(googleMapsUrl(fullAddress, lat, lon), "_blank", "noopener,noreferrer");
+function openMaps(query: string) {
+  window.open(googleMapsUrl(query), "_blank", "noopener,noreferrer");
 }
 
 // ---------------------------------------------------------------------------
-// Hook: resolve full addresses for all stores via Nominatim (staggered)
+// Hook: resolve full addresses for all stores via Nominatim (staggered at
+// 1.1 s intervals to respect their 1 req/sec rate limit).
 // ---------------------------------------------------------------------------
 function useStoreAddresses(recipes: Recipe[]): Map<string, string> {
-  // key: `${lat},${lon}`, value: resolved full address
   const [addresses, setAddresses] = useState<Map<string, string>>(new Map());
   const resolvedRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!recipes.length) return;
 
-    // Deduplicate by coordinate pair
     const unique = Array.from(
       new Map(
         recipes
@@ -109,7 +124,6 @@ function useStoreAddresses(recipes: Recipe[]): Map<string, string> {
       ).values()
     );
 
-    // Stagger requests at 1.1s intervals to respect Nominatim's rate limit
     unique.forEach((recipe, i) => {
       const key = `${recipe.store_lat},${recipe.store_lon}`;
       if (resolvedRef.current.has(key)) return;
@@ -120,7 +134,8 @@ function useStoreAddresses(recipes: Recipe[]): Map<string, string> {
         if (address) {
           setAddresses((prev) => {
             const next = new Map(prev);
-            next.set(key, address);
+            // Prepend the store name so Maps shows it prominently
+            next.set(key, `${recipe.store_name}, ${address}`);
             return next;
           });
         }
@@ -148,7 +163,6 @@ export function MerchantResults({
   const [sortKey, setSortKey] = useState<SortKey>("recipePrice");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
 
-  // Resolve full addresses for all stores in the background
   const storeAddresses = useStoreAddresses(recipes);
 
   const cheapestPrice = recipes.length
@@ -159,7 +173,6 @@ export function MerchantResults({
     return [...recipes].sort((a, b) => {
       let valA: number;
       let valB: number;
-
       if (sortKey === "totalPrice") {
         valA = a.totalPrice;
         valB = b.totalPrice;
@@ -170,7 +183,6 @@ export function MerchantResults({
         valA = calculateDistance(userLat, userLon, a.store_lat, a.store_lon);
         valB = calculateDistance(userLat, userLon, b.store_lat, b.store_lon);
       }
-
       return sortDir === "asc" ? valA - valB : valB - valA;
     });
   }, [recipes, sortKey, sortDir, userLat, userLon]);
@@ -222,9 +234,7 @@ export function MerchantResults({
           <LoadingState />
         ) : recipes.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 text-center">
-            <p className="text-lg font-semibold text-charcoal">
-              No recipes found
-            </p>
+            <p className="text-lg font-semibold text-charcoal">No recipes found</p>
             <p className="mt-1 text-sm text-muted-foreground">
               Try a different search or location.
             </p>
@@ -233,57 +243,45 @@ export function MerchantResults({
           <>
             {/* Sort controls */}
             <div className="mb-5 flex flex-wrap items-center gap-2">
-              <span className="text-xs font-medium text-muted-foreground">
-                Sort by
-              </span>
-
-              {(["recipePrice", "totalPrice", "distance"] as SortKey[]).map(
-                (key) => {
-                  const labels: Record<SortKey, string> = {
-                    recipePrice: "Recipe price",
-                    totalPrice: "Total price",
-                    distance: "Distance",
-                  };
-                  const active = sortKey === key;
-                  return (
-                    <button
-                      key={key}
-                      onClick={() => handleSortKey(key)}
-                      className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
-                        active
-                          ? "border-sage-deep bg-sage-deep text-cream"
-                          : "border-border bg-card text-charcoal hover:border-sage hover:bg-muted"
-                      }`}
-                    >
-                      {labels[key]}
-                      {active ? (
-                        sortDir === "asc" ? (
-                          <ArrowUp className="h-3 w-3" />
-                        ) : (
-                          <ArrowDown className="h-3 w-3" />
-                        )
+              <span className="text-xs font-medium text-muted-foreground">Sort by</span>
+              {(["recipePrice", "totalPrice", "distance"] as SortKey[]).map((key) => {
+                const labels: Record<SortKey, string> = {
+                  recipePrice: "Recipe cost",
+                  totalPrice: "Grocery total",
+                  distance: "Distance",
+                };
+                const active = sortKey === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => handleSortKey(key)}
+                    className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                      active
+                        ? "border-sage-deep bg-sage-deep text-cream"
+                        : "border-border bg-card text-charcoal hover:border-sage hover:bg-muted"
+                    }`}
+                  >
+                    {labels[key]}
+                    {active ? (
+                      sortDir === "asc" ? (
+                        <ArrowUp className="h-3 w-3" />
                       ) : (
-                        <ArrowUpDown className="h-3 w-3 opacity-40" />
-                      )}
-                    </button>
-                  );
-                }
-              )}
-
+                        <ArrowDown className="h-3 w-3" />
+                      )
+                    ) : (
+                      <ArrowUpDown className="h-3 w-3 opacity-40" />
+                    )}
+                  </button>
+                );
+              })}
               <button
-                onClick={() =>
-                  setSortDir((d) => (d === "asc" ? "desc" : "asc"))
-                }
+                onClick={() => setSortDir((d) => (d === "asc" ? "desc" : "asc"))}
                 className="ml-auto flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-charcoal transition hover:border-sage hover:bg-muted"
               >
                 {sortDir === "asc" ? (
-                  <>
-                    <ArrowUp className="h-3 w-3" /> Low → High
-                  </>
+                  <><ArrowUp className="h-3 w-3" /> Low → High</>
                 ) : (
-                  <>
-                    <ArrowDown className="h-3 w-3" /> High → Low
-                  </>
+                  <><ArrowDown className="h-3 w-3" /> High → Low</>
                 )}
               </button>
             </div>
@@ -291,10 +289,7 @@ export function MerchantResults({
             <motion.div
               initial="hidden"
               animate="show"
-              variants={{
-                hidden: {},
-                show: { transition: { staggerChildren: 0.07 } },
-              }}
+              variants={{ hidden: {}, show: { transition: { staggerChildren: 0.07 } } }}
               className="space-y-4"
             >
               {sortedRecipes.map((recipe, i) => (
@@ -348,15 +343,12 @@ function RecipeCard({
   resolvedAddress?: string;
 }) {
   const totalMinutes = recipe.prepMinutes + recipe.cookMinutes;
-  const distance = calculateDistance(
-    userLat,
-    userLon,
-    recipe.store_lat,
-    recipe.store_lon
-  );
-
-  // Use the full Nominatim address if resolved, otherwise fall back to name only
+  const distance = calculateDistance(userLat, userLon, recipe.store_lat, recipe.store_lon);
   const mapsQuery = resolvedAddress ?? (recipe.store_name as string);
+
+  // priceForRecipe = your portion cost (always ≤ totalPrice)
+  // totalPrice     = full grocery basket cost
+  const savings = recipe.totalPrice - recipe.priceForRecipe;
 
   return (
     <motion.div
@@ -370,9 +362,7 @@ function RecipeCard({
       >
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-display text-lg font-semibold text-charcoal">
-              {recipe.title}
-            </h2>
+            <h2 className="font-display text-lg font-semibold text-charcoal">{recipe.title}</h2>
             {isCheapest && (
               <span className="inline-flex items-center gap-1 rounded-full bg-sage-deep px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cream">
                 <TrendingDown className="h-2.5 w-2.5" /> Best value
@@ -380,9 +370,7 @@ function RecipeCard({
             )}
           </div>
 
-          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-            {recipe.description}
-          </p>
+          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{recipe.description}</p>
 
           <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             <span className="flex items-center gap-1">
@@ -391,24 +379,16 @@ function RecipeCard({
             </span>
             <span className="flex items-center gap-1">
               <Users className="h-3.5 w-3.5" />
-              {recipe.numberOfServings} serving
-              {recipe.numberOfServings !== 1 ? "s" : ""}
+              {recipe.numberOfServings} serving{recipe.numberOfServings !== 1 ? "s" : ""}
             </span>
             <span className="flex items-center gap-1">
               <MapPin className="h-3.5 w-3.5" />
-              {/* <a> inside <button> is invalid HTML — use span + openMaps() */}
               <span
                 role="link"
                 tabIndex={0}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  openMaps(mapsQuery, recipe.store_lat, recipe.store_lon);
-                }}
+                onClick={(e) => { e.stopPropagation(); openMaps(mapsQuery); }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.stopPropagation();
-                    openMaps(mapsQuery, recipe.store_lat, recipe.store_lon);
-                  }
+                  if (e.key === "Enter" || e.key === " ") { e.stopPropagation(); openMaps(mapsQuery); }
                 }}
                 className="cursor-pointer underline underline-offset-2 hover:text-sage-deep transition-colors"
               >
@@ -423,14 +403,17 @@ function RecipeCard({
           </div>
         </div>
 
+        {/* Pricing — recipe cost is the primary number, grocery total is secondary */}
         <div className="shrink-0 text-right">
           <p className="font-mono text-xl font-semibold text-charcoal">
-            ${recipe.totalPrice.toFixed(2)}
+            ${recipe.priceForRecipe.toFixed(2)}
           </p>
-          <p className="text-[11px] text-muted-foreground">
-            ${recipe.priceForRecipe.toFixed(2)} for {recipe.numberOfServings} serving
-            {recipe.numberOfServings !== 1 ? "s" : ""}
-          </p>
+          <p className="text-[11px] text-muted-foreground">recipe cost</p>
+          {savings > 0.01 && (
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              ${recipe.totalPrice.toFixed(2)} groceries
+            </p>
+          )}
         </div>
       </button>
     </motion.div>
@@ -459,6 +442,7 @@ function RecipeModal({
   const distance = recipe
     ? calculateDistance(userLat, userLon, recipe.store_lat, recipe.store_lon)
     : Infinity;
+<<<<<<< Updated upstream
 
   useEffect(() => {
     if (!recipe) return;
@@ -475,7 +459,15 @@ function RecipeModal({
     };
   }, [recipe]);
 
+=======
+>>>>>>> Stashed changes
   const mapsQuery = resolvedAddress ?? (recipe?.store_name as string) ?? "";
+
+  // Safely pull extended fields that the backend sends but the TS type may not declare
+  const buyItems: Array<{ name: string; quantity: number; unit: string; price: number }> =
+    (recipe as any)?.buyItems ?? [];
+  const instructions: string[] = (recipe as any)?.instructions ?? [];
+  const savings = recipe ? recipe.totalPrice - recipe.priceForRecipe : 0;
 
   return (
     <AnimatePresence>
@@ -513,9 +505,7 @@ function RecipeModal({
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    {recipe.description}
-                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">{recipe.description}</p>
                 </div>
                 <button
                   onClick={onClose}
@@ -529,17 +519,14 @@ function RecipeModal({
               <div className="mt-4 flex flex-wrap gap-2">
                 <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal">
                   <Clock className="h-3.5 w-3.5 text-sage-deep" />
-                  {recipe.prepMinutes}m prep · {recipe.cookMinutes}m cook ·{" "}
-                  {totalMinutes}m total
+                  {recipe.prepMinutes}m prep · {recipe.cookMinutes}m cook · {totalMinutes}m total
                 </span>
                 <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal">
                   <Users className="h-3.5 w-3.5 text-sage-deep" />
-                  {recipe.numberOfServings} serving
-                  {recipe.numberOfServings !== 1 ? "s" : ""}
+                  {recipe.numberOfServings} serving{recipe.numberOfServings !== 1 ? "s" : ""}
                 </span>
-                {/* Store pill — plain <a> is fine here, no parent <button> */}
                 <a
-                  href={googleMapsUrl(mapsQuery, recipe.store_lat, recipe.store_lon)}
+                  href={googleMapsUrl(mapsQuery)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal transition hover:bg-sage-soft hover:text-sage-deep"
@@ -558,34 +545,37 @@ function RecipeModal({
 
             {/* Scrollable body */}
             <div className="overflow-y-auto" style={{ maxHeight: "calc(85vh - 190px)" }}>
+
               {/* What to buy */}
-              <div className="px-6 py-5">
-                <div className="mb-3 flex items-center gap-1.5">
-                  <ShoppingBag className="h-4 w-4 text-sage-deep" />
-                  <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
-                    What to buy
-                  </p>
+              {buyItems.length > 0 && (
+                <div className="px-6 py-5">
+                  <div className="mb-3 flex items-center gap-1.5">
+                    <ShoppingBag className="h-4 w-4 text-sage-deep" />
+                    <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
+                      What to buy
+                    </p>
+                  </div>
+                  <ul className="space-y-2.5">
+                    {buyItems.map((item, i) => (
+                      <li key={i} className="flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium text-charcoal">{item.name}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {item.quantity} {item.unit}
+                          </p>
+                        </div>
+                        <span className="shrink-0 font-mono text-sm font-semibold text-charcoal">
+                          ${item.price.toFixed(2)}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
                 </div>
-                <ul className="space-y-2.5">
-                  {recipe.buyItems.map((item, i) => (
-                    <li key={`${item.name}-${i}`} className="flex items-center justify-between gap-4">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-charcoal">{item.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {item.quantity} {item.unit}
-                        </p>
-                      </div>
-                      <span className="font-mono text-sm font-semibold text-charcoal shrink-0">
-                        ${item.price.toFixed(2)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
+              )}
 
-              <div className="mx-6 border-t border-border" />
+              {buyItems.length > 0 && <div className="mx-6 border-t border-border" />}
 
-              {/* Ingredients */}
+              {/* Ingredients used */}
               <div className="px-6 py-5">
                 <div className="mb-3 flex items-center gap-1.5">
                   <ChefHat className="h-4 w-4 text-sage-deep" />
@@ -594,75 +584,110 @@ function RecipeModal({
                   </p>
                 </div>
                 <ul className="space-y-2.5">
-                  {recipe.ingredients.map((ing, i) => (
-                    <li key={`${ing.name}-${i}`} className="flex items-center justify-between gap-4">
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-semibold text-charcoal">
-                          {ing.usedQuantity} {ing.unit} {ing.name}
-                        </p>
-                        <p className="truncate text-xs text-muted-foreground">from {ing.sourceItemName}</p>
-                      </div>
-                      <span className="font-mono text-xs font-medium text-muted-foreground shrink-0">
-                        ${ing.price.toFixed(2)}
-                      </span>
-                    </li>
-                  ))}
+                  {recipe.ingredients.map((ing, i) => {
+                    const displaySource = cleanSourceName(
+                      (ing as any).sourceItemName ?? "",
+                      ing.name as string
+                    );
+                    const isFromStore =
+                      displaySource.toLowerCase() !== (ing.name as string).toLowerCase();
+
+                    return (
+                      <li key={i} className="flex items-center justify-between gap-4">
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-charcoal">
+                            {ing.usedQuantity} {(ing as any).unit ?? ""} {ing.name}
+                          </p>
+                          {isFromStore && (
+                            <p className="truncate text-xs text-muted-foreground">
+                              from {displaySource}
+                            </p>
+                          )}
+                        </div>
+                        <span className="shrink-0 font-mono text-xs font-semibold text-charcoal">
+                          ${ing.price.toFixed(2)}
+                        </span>
+                      </li>
+                    );
+                  })}
                 </ul>
               </div>
 
               <div className="mx-6 border-t border-border" />
 
               {/* Instructions */}
+              {instructions.length > 0 && (
+                <>
+                  <div className="px-6 py-5">
+                    <div className="mb-3 flex items-center gap-1.5">
+                      <ChefHat className="h-4 w-4 text-sage-deep" />
+                      <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
+                        Instructions
+                      </p>
+                    </div>
+                    <ol className="space-y-3">
+                      {instructions.map((step, i) => (
+                        <li key={i} className="flex gap-3">
+                          <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sage-soft text-[11px] font-semibold text-sage-deep">
+                            {i + 1}
+                          </span>
+                          <p className="text-sm leading-relaxed text-charcoal/90">{step}</p>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                  <div className="mx-6 border-t border-border" />
+                </>
+              )}
+
+              {/* Cost breakdown */}
               <div className="px-6 py-5">
                 <div className="mb-3 flex items-center gap-1.5">
-                  <ChefHat className="h-4 w-4 text-sage-deep" />
-                  <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
-                    Instructions
-                  </p>
-                </div>
-                {Array.isArray(recipe.instructions) && recipe.instructions.length > 0 ? (
-                  <ol className="space-y-2">
-                    {recipe.instructions.map((step, i) => (
-                      <li key={`${recipe.title}-step-${i}`} className="flex gap-3">
-                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sage-soft text-[11px] font-semibold text-sage-deep">
-                          {i + 1}
-                        </span>
-                        <p className="text-sm leading-relaxed text-charcoal/90">{step}</p>
-                      </li>
-                    ))}
-                  </ol>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No instructions provided.</p>
-                )}
-              </div>
-
-              <div className="mx-6 border-t border-border" />
-
-              {/* Price breakdown */}
-              <div className="px-6 py-5">
-                <div className="mb-3 flex items-center gap-1.5">
-                  <ChefHat className="h-4 w-4 text-sage-deep" />
+                  <ShoppingBag className="h-4 w-4 text-sage-deep" />
                   <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
                     Cost breakdown
                   </p>
                 </div>
                 <div className="space-y-2">
+                  {/* Recipe cost — always ≤ grocery total */}
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Total price</span>
+                    <div>
+                      <p className="text-sm text-charcoal font-medium">Recipe cost</p>
+                      <p className="text-xs text-muted-foreground">
+                        your portion for {recipe.numberOfServings} serving
+                        {recipe.numberOfServings !== 1 ? "s" : ""}
+                      </p>
+                    </div>
                     <span className="font-mono text-sm font-semibold text-charcoal">
-                      ${recipe.totalPrice.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Price for recipe</span>
-                    <span className="font-mono text-sm text-muted-foreground">
                       ${recipe.priceForRecipe.toFixed(2)}
                     </span>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    Price for recipe for {recipe.numberOfServings} serving
-                    {recipe.numberOfServings !== 1 ? "s" : ""}.
-                  </p>
+
+                  {/* Grocery total — what you actually pay at the register */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-muted-foreground">Grocery total</p>
+                      <p className="text-xs text-muted-foreground">full items at the register</p>
+                    </div>
+                    <span className="font-mono text-sm text-muted-foreground">
+                      ${recipe.totalPrice.toFixed(2)}
+                    </span>
+                  </div>
+
+                  {/* Leftovers savings callout */}
+                  {savings > 0.01 && (
+                    <div className="flex items-center justify-between rounded-xl bg-sage-soft px-3 py-2">
+                      <div>
+                        <p className="text-xs font-medium text-sage-deep">Leftovers value</p>
+                        <p className="text-[10px] text-sage-deep/70">
+                          ingredients you keep after cooking
+                        </p>
+                      </div>
+                      <span className="font-mono text-xs font-semibold text-sage-deep">
+                        ${savings.toFixed(2)}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -680,10 +705,7 @@ function LoadingState() {
   return (
     <div className="space-y-4">
       {[0, 1, 2].map((i) => (
-        <div
-          key={i}
-          className="overflow-hidden rounded-2xl border border-border bg-card p-5"
-        >
+        <div key={i} className="overflow-hidden rounded-2xl border border-border bg-card p-5">
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1 space-y-2">
               <Skeleton className="h-5 w-48" />
