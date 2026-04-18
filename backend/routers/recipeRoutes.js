@@ -4,7 +4,7 @@ import { generateOptimizedMealPlan, enrichRecipesWithStoreCoords } from "../api/
 import { getAllGroceries } from "../api/flipp.js";
 import sampleRecipes from "../api/sampleRecipes.js";
 
-const USE_SAMPLE_DATA = false; // 👈 flip to false to use real AI
+const USE_SAMPLE_DATA = true; // 👈 flip to false to use real AI
 
 const router = express.Router();
 

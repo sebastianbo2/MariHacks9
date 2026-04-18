@@ -159,6 +159,8 @@ export function MerchantResults({
   userLon = 0,
 }: Props) {
   const recipes = data as Recipe[];
+
+  console.log(recipes);
   const [activeRecipe, setActiveRecipe] = useState<Recipe | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("recipePrice");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
@@ -442,7 +444,6 @@ function RecipeModal({
   const distance = recipe
     ? calculateDistance(userLat, userLon, recipe.store_lat, recipe.store_lon)
     : Infinity;
-<<<<<<< Updated upstream
 
   useEffect(() => {
     if (!recipe) return;
@@ -459,8 +460,6 @@ function RecipeModal({
     };
   }, [recipe]);
 
-=======
->>>>>>> Stashed changes
   const mapsQuery = resolvedAddress ?? (recipe?.store_name as string) ?? "";
 
   // Safely pull extended fields that the backend sends but the TS type may not declare

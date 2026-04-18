@@ -14,6 +14,7 @@
   "dependencies": {
     "@ai-sdk/google": "^3.0.64",
     "@ai-sdk/xai": "^3.0.83",
+    "@google/generative-ai": "^0.24.1",
     "ai": "^6.0.168",
     "axios": "^1.15.0",
     "cors": "^2.8.6",
