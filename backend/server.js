@@ -1,32 +1,55 @@
 import express from 'express';
-import dotenv from 'dotenv';
 import axios from 'axios';
 import fetch from "node-fetch";
+import "dotenv/config"
 
 import getNearbySupermarkets from './api/getNearbyStores.js';
-
-dotenv.config();
+// import recipeRoutes from './routers/recipeRoutes.js';
 
 const log = console.log;
 
 const app = express();
+app.use(express.json());
+app.use('/api/ai', recipeRoutes);
 
-log("key: ", process.env.API_KEY)
+// log("key: ", process.env.API_KEY)
 
 // --- Example usage ---
 // Any of these input formats work:
-const results1 = await getNearbySupermarkets("4696 Ave. King-Edward, Montréal, QC H4V 2J6");
+// const results1 = await getNearbySupermarkets("4696 Ave. King-Edward, Montréal, QC H4V 2J6");
 
-console.log(`Found ${results1.length} supermarkets:`);
-results1.forEach((s) => {
-  console.log(`• ${s.name} — ${s.address}`);
-});
+// console.log(`Found ${results1.length} supermarkets:`);
+// results1.forEach((s) => {
+//   console.log(`• ${s.name} — ${s.address}`);
+// });
 
 app.get("/", (req, res) => {
 
     res.send(results1);
 })
 
-app.listen(process.env.PORT || 8000, () => {
-    log("Server is listening on port", process.env.PORT)
+app.post("/api/recipes", (req, res) => {
+    res.send(JSON.stringify({
+        
+  title: "Chicken Pasta",
+  store_name: "IGA",
+  store_lat: 1,
+  store_lon: 1,
+  ingredients: [
+    {price: 5, name: "Chicken", quantity: 5, unit: "lbs", usedQuantity: 2},
+    {price: 3, name: "Pasta", quantity: 100, unit: "g", usedQuantity: 50}
+  ],
+  totalPrice: 100,
+  priceForRecipe: 50,
+  numberOfServings: 3,
+  description: "Cool chicken pasta really nice",
+  prepMinutes: 15,
+  cookMinutes: 20,
+
+    }))
+})
+
+const PORT = process.env.PORT || 3001
+app.listen(PORT, () => {
+    log("Server is listening on port", PORT)
 })
