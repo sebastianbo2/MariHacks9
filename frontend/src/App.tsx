@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { SmartCartHome } from "@/components/SmartCartHome";
 import { MerchantResults } from "@/components/MerchantResults";
 import type { PrepMode } from "@/data/flyerData";
+import AddressInput from "./components/AddressInput";
 
 interface Plan {
   query: string;
@@ -34,6 +35,7 @@ export default function App() {
           transition={{ duration: 0.3 }}
         >
           <SmartCartHome onSubmit={handleSubmit} />
+          <AddressInput></AddressInput>
         </motion.div>
       ) : (
         <motion.div
