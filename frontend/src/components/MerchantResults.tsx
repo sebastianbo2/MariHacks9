@@ -460,6 +460,21 @@ function RecipeModal({
     ? calculateDistance(userLat, userLon, recipe.store_lat, recipe.store_lon)
     : Infinity;
 
+  useEffect(() => {
+    if (!recipe) return;
+
+    const prevBodyOverflow = document.body.style.overflow;
+    const prevHtmlOverflow = document.documentElement.style.overflow;
+
+    document.body.style.overflow = "hidden";
+    document.documentElement.style.overflow = "hidden";
+
+    return () => {
+      document.body.style.overflow = prevBodyOverflow;
+      document.documentElement.style.overflow = prevHtmlOverflow;
+    };
+  }, [recipe]);
+
   const mapsQuery = resolvedAddress ?? (recipe?.store_name as string) ?? "";
 
   return (
@@ -482,7 +497,7 @@ function RecipeModal({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 16 }}
             transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
-            className="fixed left-1/2 top-1/2 z-50 max-h-[85vh] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl border border-border bg-card shadow-2xl"
+            className="fixed left-1/2 top-1/2 z-50 max-h-[85vh] w-[calc(100%-2rem)] max-w-xl -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl border border-border bg-card shadow-2xl"
           >
             {/* Header */}
             <div className="border-b border-border px-6 py-5">
@@ -538,8 +553,6 @@ function RecipeModal({
                   )}
                   <ExternalLink className="h-3 w-3 opacity-50" />
                 </a>
-                  {recipe.store_name} · {recipe.distanceKm} km away
-                </span>
               </div>
             </div>
 

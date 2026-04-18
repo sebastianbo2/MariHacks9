@@ -52,7 +52,7 @@ const MAJOR_GROCERY_STORES = new Set([
   "Maxi",
   "Provigo",
   "Super C",
-  "Metro",
+//   "Metro",
   "Walmart",
   "Loblaws",
   "No Frills",
@@ -520,8 +520,6 @@ export async function generateOptimizedMealPlan({
   userAddress,           // full address string, e.g. "4800 Rue Sherbrooke Ouest, Montréal"
   userLat,               // number
   userLon,               // number
-  pantryItems = ["salt", "pepper", "vegetable oil", "water"],
-  flyerItems = [],
   genericIngredientsMarkdown = "",
   recipeCount = 3,
 }) {
