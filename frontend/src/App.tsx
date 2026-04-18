@@ -98,8 +98,12 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          userRequest: plan.query,
-          pantryItems: plan.pantry,
+          userRequest: plan.query,   // router expects "userRequest"
+          mode: plan.mode,
+          pantryItems: plan.pantry,  // router expects "pantryItems"
+          lat: coords.lat,
+          lon: coords.lon,
+          address: coords.address,
           postcode: coords.postcode,
         }),
       });
@@ -289,6 +293,8 @@ export default function App() {
             loading={false}      // already done — no need for skeleton
             onBack={handleBack}
             data={backendData}   // 👈 your backend data lands here
+            userLat={coords?.lat}
+            userLon={coords?.lon}
           />
         </motion.div>
       )}
