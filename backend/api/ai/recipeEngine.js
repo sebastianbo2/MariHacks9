@@ -61,67 +61,86 @@ function calculateDistance(userLat, userLon, busLat, busLon) {
 }
 
 // ---------------------------------------------------------------------------
-// Query Overpass directly with coordinates (bypasses geocoding in getNearbyStores)
+// Fetch nearby supermarkets using Nominatim (same API as frontend autocomplete)
 // ---------------------------------------------------------------------------
-async function queryNearbySupermarkets(userLat, userLon, radiusMeters = 5000) {
-  const query = `
-    [out:json][timeout:25];
-    (
-      node["shop"="supermarket"](around:${radiusMeters},${userLat},${userLon});
-      way["shop"="supermarket"](around:${radiusMeters},${userLat},${userLon});
-    );
-    out center;
-  `;
+const STORE_SEARCH_TERMS = [
+  "IGA", "Maxi", "Metro", "Super C", "Provigo",
+  "Walmart", "Adonis", "PA Supermarche", "Loblaws",
+];
 
-  const res = await fetch("https://overpass-api.de/api/interpreter", {
-    method: "POST",
-    body: `data=${encodeURIComponent(query)}`,
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+async function fetchAllNearbyStores(userLat, userLon, radiusMeters = 8000) {
+  // Convert radius from meters to degrees (rough approximation, fine for ~8km)
+  const radiusDeg = radiusMeters / 111000;
+  const viewbox = `${userLon - radiusDeg},${userLat + radiusDeg},${userLon + radiusDeg},${userLat - radiusDeg}`;
+
+  // Search for each major store chain separately and combine results
+  const searches = STORE_SEARCH_TERMS.map(async (storeName) => {
+    const params = new URLSearchParams({
+      q: `${storeName} supermarket Montreal`,
+      format: "json",
+      limit: "5",
+      viewbox,
+      bounded: "1",
+    });
+
+    try {
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?${params}`,
+        {
+          headers: { "User-Agent": "smartcart-app/1.0" },
+          signal: AbortSignal.timeout(10000),
+        }
+      );
+      if (!res.ok) return [];
+      const data = await res.json();
+      return data.map((item) => ({
+        name: item.display_name.split(",")[0].trim(), // just the store name part
+        lat: parseFloat(item.lat),
+        lon: parseFloat(item.lon),
+      }));
+    } catch {
+      return [];
+    }
   });
 
-  if (!res.ok) throw new Error(`Overpass error: ${res.status}`);
+  // Stagger requests slightly to be respectful to Nominatim (1 req/sec limit)
+  const results = [];
+  for (const search of searches) {
+    results.push(...(await search));
+    await new Promise((r) => setTimeout(r, 200));
+  }
 
-  const data = await res.json();
-  return data.elements.map((el) => ({
-    name: el.tags?.name ?? "",
-    lat: el.lat ?? el.center?.lat,
-    lon: el.lon ?? el.center?.lon,
-  }));
+  console.log(`Found ${results.length} stores via Nominatim`);
+  return results;
 }
 
 // ---------------------------------------------------------------------------
-// Given a store name and the user's coordinates, find the nearest OSM match
+// Find nearest store matching a name from the already-fetched list
+// Returns { lat, lon } or null if no match found — does NOT call any API
 // ---------------------------------------------------------------------------
-async function findNearestStoreLocation(storeName, userLat, userLon, radiusMeters = 5000) {
-  try {
-    const nearby = await queryNearbySupermarkets(userLat, userLon, radiusMeters);
-    if (!nearby || nearby.length === 0) return null;
+function findNearestFromList(storeName, allStores, userLat, userLon) {
+  if (!allStores || allStores.length === 0) return null;
 
-    const storeNameLower = storeName.toLowerCase();
-    const matches = nearby.filter(
-      (s) => s.name && s.name.toLowerCase().includes(storeNameLower),
-    );
+  const storeNameLower = storeName.toLowerCase();
+  const matches = allStores.filter(
+    (s) => s.name && s.name.toLowerCase().includes(storeNameLower),
+  );
 
-    // Fall back to all nearby stores if no name match
-    const candidates = matches.length > 0 ? matches : nearby;
+  if (matches.length === 0) return null; // store not found nearby — caller will drop it
 
-    let nearest = null;
-    let nearestDist = Infinity;
+  let nearest = null;
+  let nearestDist = Infinity;
 
-    for (const store of candidates) {
-      if (store.lat == null || store.lon == null) continue;
-      const dist = calculateDistance(userLat, userLon, store.lat, store.lon);
-      if (dist < nearestDist) {
-        nearestDist = dist;
-        nearest = store;
-      }
+  for (const store of matches) {
+    if (store.lat == null || store.lon == null) continue;
+    const dist = calculateDistance(userLat, userLon, store.lat, store.lon);
+    if (dist < nearestDist) {
+      nearestDist = dist;
+      nearest = store;
     }
-
-    return nearest ? { lat: nearest.lat, lon: nearest.lon } : null;
-  } catch (err) {
-    console.warn(`findNearestStoreLocation failed for "${storeName}":`, err.message);
-    return null;
   }
+
+  return nearest ? { lat: nearest.lat, lon: nearest.lon } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -397,16 +416,11 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
 // ---------------------------------------------------------------------------
 export async function generateOptimizedMealPlan({
   userRequest,
-<<<<<<< Updated upstream
-  pantryItems,
-  flyerItems,
-=======
   userAddress,           // full address string, e.g. "4800 Rue Sherbrooke Ouest, Montréal"
   userLat,               // number
   userLon,               // number
   pantryItems = ["salt", "pepper", "vegetable oil", "water"],
   flyerItems = [],
->>>>>>> Stashed changes
   genericIngredientsMarkdown = "",
   recipeCount = 3,
 }) {
@@ -443,14 +457,21 @@ ${flyerMarkdown}
 Generic fallback table:
 ${genericIngredientsMarkdown}`;
 
-  const { object } = await generateObject({
-    model: google("gemini-3.1-flash-lite-preview"),
-    schema: GeneratedPlanSchema,
-    messages: [
-      { role: "system", content: system },
-      { role: "user", content: user },
-    ],
-  });
+  // Run Overpass and AI in parallel — no waiting on each other
+  const [{ object }, allNearbyStores] = await Promise.all([
+    generateObject({
+      model: google("gemini-3.1-flash-lite-preview"),
+      schema: GeneratedPlanSchema,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+    }),
+    fetchAllNearbyStores(userLat, userLon, 8000).catch((err) => {
+      console.warn("Overpass fetch failed:", err.message);
+      return [];
+    }),
+  ]);
 
   const generatedRecipes = Array.isArray(object?.recipes) ? object.recipes : [];
   const safeCount = Math.max(1, Number(recipeCount) || 3);
@@ -482,30 +503,49 @@ ${genericIngredientsMarkdown}`;
     throw new Error("No valid recipes left after removing ingredients with missing prices.");
   }
 
-  // -------------------------------------------------------------------------
-  // Enrich each recipe with real OSM store coordinates nearest to the user
-  // We deduplicate by store name so we only call OSM once per unique store
-  // -------------------------------------------------------------------------
-  const storeCache = new Map(); // store_name → { lat, lon } | null
+  const enriched = mappedRecipes
+    .map((recipe) => {
+      if (allNearbyStores.length === 0) return recipe; // Overpass failed, keep as-is
 
-  const enriched = await Promise.all(
-    mappedRecipes.map(async (recipe) => {
-      const storeName = recipe.store_name;
+      const location = findNearestFromList(recipe.store_name, allNearbyStores, userLat, userLon);
 
-      if (!storeCache.has(storeName)) {
-        const location = await findNearestStoreLocation(storeName, userLat, userLon);
-        storeCache.set(storeName, location);
+      if (!location) {
+        // Store not found nearby — drop this recipe
+        console.log(`Dropping recipe "${recipe.title}" — no nearby ${recipe.store_name} found`);
+        return null;
       }
 
-      const location = storeCache.get(storeName);
+      return { ...recipe, store_lat: location.lat, store_lon: location.lon };
+    })
+    .filter(Boolean);
 
-      return {
-        ...recipe,
-        store_lat: location?.lat ?? recipe.store_lat,
-        store_lon: location?.lon ?? recipe.store_lon,
-      };
-    }),
-  );
+  // If all recipes got dropped (e.g. Overpass failed), return originals
+  return enriched.length > 0 ? enriched : mappedRecipes;
+}
 
-  return enriched;
+// ---------------------------------------------------------------------------
+// Exported separately so the router can use it on sample data too
+// ---------------------------------------------------------------------------
+export async function enrichRecipesWithStoreCoords(recipes, userLat, userLon) {
+  let allNearbyStores = [];
+  try {
+    allNearbyStores = await fetchAllNearbyStores(userLat, userLon, 8000);
+    console.log(`Found ${allNearbyStores.length} nearby stores from Overpass`);
+    console.log("Store names:", allNearbyStores.map((s) => s.name));
+  } catch (err) {
+    console.warn("Overpass fetch failed, store coords will be omitted:", err.message);
+  }
+
+  return recipes.map((recipe) => {
+    if (allNearbyStores.length === 0) return recipe;
+
+    const location = findNearestFromList(recipe.store_name, allNearbyStores, userLat, userLon);
+
+    if (!location) {
+      console.log(`No nearby "${recipe.store_name}" found for "${recipe.title}", keeping coords as 0`);
+      return recipe;
+    }
+
+    return { ...recipe, store_lat: location.lat, store_lon: location.lon };
+  });
 }
