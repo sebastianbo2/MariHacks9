@@ -11,6 +11,7 @@ interface Coords {
   address: string;
   lat: number;
   lon: number;
+  postcode: string | null;
 }
 
 interface Plan {
@@ -41,7 +42,7 @@ interface Recipe {
 }
 
 // 👇 Shape of whatever your backend sends back — adjust to match your API
-export type BackendResponse = Recipe[]
+export type BackendResponse = Recipe[];
 
 const pageVariants = {
   enter: { opacity: 0, y: 18 },
@@ -74,7 +75,7 @@ export default function App() {
     setError(null);
 
     try {
-      const response = await fetch("http://localhost:3000/api/results", {
+      const response = await fetch("http://localhost:8000/api/recipes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -84,6 +85,7 @@ export default function App() {
           lat: coords.lat,
           lon: coords.lon,
           address: coords.address,
+          postcode: coords.postcode,
         }),
       });
 

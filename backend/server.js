@@ -1,6 +1,7 @@
 import express from 'express';
 import axios from 'axios';
 import fetch from "node-fetch";
+import cors from 'cors';
 import "dotenv/config"
 
 import getNearbySupermarkets from './api/getNearbyStores.js';
@@ -10,7 +11,8 @@ const log = console.log;
 
 const app = express();
 app.use(express.json());
-app.use('/api/ai', recipeRoutes);
+app.use(cors());
+// app.use('/api/ai', recipeRoutes);
 
 // log("key: ", process.env.API_KEY)
 
@@ -29,6 +31,10 @@ app.get("/", (req, res) => {
 })
 
 app.post("/api/recipes", (req, res) => {
+    const postal_code = req.body.postcode;
+
+    log("Postal Code:", postal_code);
+
     res.send(JSON.stringify({
         
   title: "Chicken Pasta",

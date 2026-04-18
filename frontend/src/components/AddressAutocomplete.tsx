@@ -4,10 +4,11 @@ interface Suggestion {
   label: string;
   lat: number;
   lon: number;
+  postcode: string | null;
 }
 
 interface AddressAutocompleteProps {
-  onSelect: (result: { address: string; lat: number; lon: number }) => void;
+  onSelect: (result: { address: string; lat: number; lon: number; postcode: string | null }) => void;
   placeholder?: string;
 }
 
@@ -73,6 +74,7 @@ export default function AddressAutocomplete({
             .join(", "),
           lat: parseFloat(item.lat),
           lon: parseFloat(item.lon),
+          postcode: item.address?.postcode ?? null,
         }));
 
         // Deduplicate by label
@@ -102,7 +104,7 @@ export default function AddressAutocomplete({
     setIsOpen(false);
     setActiveIndex(-1);
     setSelected(true);
-    onSelect({ address: s.label, lat: s.lat, lon: s.lon });
+    onSelect({ address: s.label, lat: s.lat, lon: s.lon, postcode: s.postcode });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
