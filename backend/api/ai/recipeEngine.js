@@ -22,6 +22,22 @@ const GeneratedPlanSchema = z.object({
   recipes: z.array(PlannedRecipeSchema).min(1),
 });
 
+const MAJOR_GROCERY_STORES = new Set([
+  "IGA",
+  "Maxi",
+  "Provigo",
+  "Super C",
+  "Metro",
+  "Walmart",
+  "Loblaws",
+  "No Frills",
+  "FreshCo",
+  "Food Basics",
+  "Costco",
+  "Adonis",
+  "PA Supermarche",
+]);
+
 function toPriceNumber(value) {
   if (typeof value === "number") return value;
   const parsed = Number(value);
@@ -222,6 +238,16 @@ function resolveIngredientPrice(ingredient, flyerIndex, genericIndex) {
 function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown) {
   const flyerIndex = normalizeFlyers(flyerItems);
   const genericIndex = parseGenericMarkdown(genericIngredientsMarkdown);
+  const defaultStore =
+    flyerItems.find((item) => {
+      const merchant = String(item?.merchant ?? item?.store_name ?? "").trim();
+      return MAJOR_GROCERY_STORES.has(merchant);
+    })?.merchant ??
+    flyerItems.find((item) => {
+      const merchant = String(item?.merchant ?? item?.store_name ?? "").trim();
+      return merchant.length > 0 && merchant.toLowerCase() !== "statcan (qc)";
+    })?.merchant ??
+    "IGA";
 
   return plan.recipes.map((recipe) => {
     let dominantMerchant = null;
@@ -231,7 +257,12 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown) {
     const ingredients = recipe.ingredients.map((ingredient) => {
       const resolved = resolveIngredientPrice(ingredient, flyerIndex, genericIndex);
 
-      if (!dominantMerchant && resolved.merchant) {
+      const merchant = String(resolved.merchant ?? "").trim();
+      const isValidStore = merchant && merchant.toLowerCase() !== "statcan (qc)";
+      const isMajorStore = MAJOR_GROCERY_STORES.has(merchant);
+      const isSaleIngredient = ingredient.source_tier === "SALE";
+
+      if (!dominantMerchant && isSaleIngredient && isValidStore && isMajorStore) {
         dominantMerchant = resolved.merchant;
         dominantLat = resolved.lat;
         dominantLon = resolved.lon;
@@ -254,9 +285,9 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown) {
 
     return {
       title: recipe.title,
-      store_name: dominantMerchant ?? "Unknown",
-      store_lat: dominantLat,
-      store_lon: dominantLon,
+      store_name: dominantMerchant ?? defaultStore,
+      store_lat: dominantMerchant ? dominantLat : 0,
+      store_lon: dominantMerchant ? dominantLon : 0,
       ingredients,
       totalPrice: priceForRecipe,
       priceForRecipe,
@@ -273,6 +304,7 @@ export async function generateOptimizedMealPlan({
   pantryItems = ["salt", "pepper", "vegetable oil", "water"],
   flyerItems = [],
   genericIngredientsMarkdown = "",
+  recipeCount = 3,
 }) {
   if (!process.env.GOOGLE_GENERATIVE_AI_API_KEY) {
     throw new Error(
@@ -290,9 +322,11 @@ Rules:
 1) Keep recipes practical and cheap.
 2) Use SALE ingredients first when possible.
 3) If not found in flyers, use GENERIC ingredients.
+4) GENERIC (StatCan QC) is Tier 2 fallback only when flyer data is missing for needed ingredients.
 4) PANTRY items are allowed and should be marked as PANTRY.
 5) For SALE include flyer_id. For GENERIC include generic_id.
-6) Ingredient usedQuantity should be a positive number.`;
+6) Ingredient usedQuantity should be a positive number.
+7) Generate exactly ${recipeCount} recipes.`;
 
   const user = `User intent: ${userRequest}
 
@@ -304,14 +338,39 @@ ${flyerMarkdown}
 Generic fallback table:
 ${genericIngredientsMarkdown}`;
 
+  const schema = GeneratedPlanSchema;
+
   const { object } = await generateObject({
     model: google("gemini-2.5-flash-lite"),
-    schema: GeneratedPlanSchema,
+    schema,
     messages: [
       { role: "system", content: system },
       { role: "user", content: user },
     ],
   });
 
-  return mapToFrontendRecipes(object, flyerItems, genericIngredientsMarkdown);
+  const generatedRecipes = Array.isArray(object?.recipes) ? object.recipes : [];
+  const safeCount = Math.max(1, Number(recipeCount) || 3);
+
+  let normalizedRecipes = generatedRecipes.slice(0, safeCount);
+  if (normalizedRecipes.length > 0 && normalizedRecipes.length < safeCount) {
+    const missing = safeCount - normalizedRecipes.length;
+    for (let i = 0; i < missing; i++) {
+      const cloneSource = normalizedRecipes[i % normalizedRecipes.length];
+      normalizedRecipes.push({
+        ...cloneSource,
+        title: `${cloneSource.title} (Variation ${i + 1})`,
+      });
+    }
+  }
+
+  if (normalizedRecipes.length === 0) {
+    throw new Error("AI did not return any recipes.");
+  }
+
+  return mapToFrontendRecipes(
+    { recipes: normalizedRecipes },
+    flyerItems,
+    genericIngredientsMarkdown,
+  );
 }

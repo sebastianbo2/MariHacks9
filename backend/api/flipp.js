@@ -1,7 +1,20 @@
 import axios from "axios";
 
-// GROCERY_STORES = ["Provigo", 'FreshCo', 'Walmart', 'Loblaws', "Maxi", "IGA", "Metro", "Super C", "T&T Supermarket"]
-const GROCERY_STORES = ["Provigo", "IGA", "Super C"];
+const GROCERY_STORES = [
+  "Provigo",
+  "IGA",
+  "Super C",
+  "Maxi",
+  "Metro",
+  "Walmart",
+  "Loblaws",
+  "No Frills",
+  "FreshCo",
+  "Food Basics",
+  "Costco",
+  "Adonis",
+  "PA Supermarche",
+];
 
 function normalizePostalCode(postalCode) {
   return String(postalCode ?? "")

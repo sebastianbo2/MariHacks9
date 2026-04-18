@@ -19,6 +19,7 @@ router.post("/recipes", async (req, res) => {
       pantryItems = ["salt", "pepper", "vegetable oil", "water"],
       genericIngredientsMarkdown = genericIngredients,
       postcode,
+      mealsPerFlyer = 3,
     } = req.body ?? {};
 
     if (!userRequest || typeof userRequest !== "string") {
@@ -45,11 +46,22 @@ router.post("/recipes", async (req, res) => {
       flyerItems = ingredients;
     }
 
+    const flyerIds = new Set(
+      flyerItems
+        .map((item) => item?.flyer_id)
+        .filter((id) => id != null)
+        .map((id) => Number(id)),
+    );
+    const flyerCount = flyerIds.size > 0 ? flyerIds.size : 1;
+    const perFlyer = Math.max(1, Math.min(5, Number(mealsPerFlyer) || 3));
+    const recipeCount = perFlyer * flyerCount;
+
     const recipes = await generateOptimizedMealPlan({
       userRequest,
       pantryItems,
       flyerItems,
       genericIngredientsMarkdown,
+      recipeCount,
     });
 
     return res.json(recipes);

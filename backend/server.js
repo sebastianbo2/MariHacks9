@@ -1,8 +1,6 @@
-import express from 'express';
-import axios from 'axios';
-import fetch from "node-fetch";
-import cors from 'cors';
-import "dotenv/config"
+import express from "express";
+import cors from "cors";
+import "dotenv/config";
 
 import recipeRoutes from "./routers/recipeRoutes.js";
 
@@ -11,7 +9,7 @@ const log = console.log;
 const app = express();
 app.use(express.json());
 app.use(cors());
-// app.use('/api/ai', recipeRoutes);
+app.use("/api", recipeRoutes);
 
 // log("key: ", process.env.API_KEY)
 
@@ -25,11 +23,7 @@ app.use(cors());
 // });
 
 app.get("/", (req, res) => {
-  res.json({
-    service: "MariHacks9 backend",
-    status: "ok",
-    endpoints: ["POST /api/ai/recipes"],
-  });
+  res.send("MariHacks9 backend is running. Use POST /api/recipes");
 });
 
 const PORT = process.env.PORT || 8000;
