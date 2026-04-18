@@ -79,9 +79,9 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          query: plan.query,
+          userRequest: plan.query,   // router expects "userRequest"
           mode: plan.mode,
-          pantry: plan.pantry,
+          pantryItems: plan.pantry,  // router expects "pantryItems"
           lat: coords.lat,
           lon: coords.lon,
           address: coords.address,

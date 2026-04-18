@@ -1,6 +1,7 @@
 import { generateObject } from "ai";
 import { google } from "@ai-sdk/google";
 import { z } from "zod";
+
 const PlannedIngredientSchema = z.object({
   name: z.string(),
   usedQuantity: z.number().positive(),
@@ -38,6 +39,94 @@ const MAJOR_GROCERY_STORES = new Set([
   "PA Supermarche",
 ]);
 
+// ---------------------------------------------------------------------------
+// Haversine distance (km)
+// ---------------------------------------------------------------------------
+function toRadians(deg) {
+  return deg * (Math.PI / 180);
+}
+
+function calculateDistance(userLat, userLon, busLat, busLon) {
+  const R = 6371;
+  const dLat = toRadians(busLat - userLat);
+  const dLon = toRadians(busLon - userLon);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(userLat)) *
+      Math.cos(toRadians(busLat)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// ---------------------------------------------------------------------------
+// Query Overpass directly with coordinates (bypasses geocoding in getNearbyStores)
+// ---------------------------------------------------------------------------
+async function queryNearbySupermarkets(userLat, userLon, radiusMeters = 5000) {
+  const query = `
+    [out:json][timeout:25];
+    (
+      node["shop"="supermarket"](around:${radiusMeters},${userLat},${userLon});
+      way["shop"="supermarket"](around:${radiusMeters},${userLat},${userLon});
+    );
+    out center;
+  `;
+
+  const res = await fetch("https://overpass-api.de/api/interpreter", {
+    method: "POST",
+    body: `data=${encodeURIComponent(query)}`,
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+  });
+
+  if (!res.ok) throw new Error(`Overpass error: ${res.status}`);
+
+  const data = await res.json();
+  return data.elements.map((el) => ({
+    name: el.tags?.name ?? "",
+    lat: el.lat ?? el.center?.lat,
+    lon: el.lon ?? el.center?.lon,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Given a store name and the user's coordinates, find the nearest OSM match
+// ---------------------------------------------------------------------------
+async function findNearestStoreLocation(storeName, userLat, userLon, radiusMeters = 5000) {
+  try {
+    const nearby = await queryNearbySupermarkets(userLat, userLon, radiusMeters);
+    if (!nearby || nearby.length === 0) return null;
+
+    const storeNameLower = storeName.toLowerCase();
+    const matches = nearby.filter(
+      (s) => s.name && s.name.toLowerCase().includes(storeNameLower),
+    );
+
+    // Fall back to all nearby stores if no name match
+    const candidates = matches.length > 0 ? matches : nearby;
+
+    let nearest = null;
+    let nearestDist = Infinity;
+
+    for (const store of candidates) {
+      if (store.lat == null || store.lon == null) continue;
+      const dist = calculateDistance(userLat, userLon, store.lat, store.lon);
+      if (dist < nearestDist) {
+        nearestDist = dist;
+        nearest = store;
+      }
+    }
+
+    return nearest ? { lat: nearest.lat, lon: nearest.lon } : null;
+  } catch (err) {
+    console.warn(`findNearestStoreLocation failed for "${storeName}":`, err.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers (unchanged)
+// ---------------------------------------------------------------------------
 function toPriceNumber(value) {
   if (typeof value === "number") return value;
   const parsed = Number(value);
@@ -62,13 +151,14 @@ function compactFlyersForPrompt(items, maxRows = 350) {
     .sort((a, b) => a.price - b.price)
     .slice(0, maxRows);
 
-  const header = "| flyer_id | Merchant | Item Name | Price | Unit | Valid To |\\n|---|---|---|---:|---|---|";
+  const header =
+    "| flyer_id | Merchant | Item Name | Price | Unit | Valid To |\n|---|---|---|---:|---|---|";
   const rows = normalized.map(
     (item) =>
       `| ${item.flyer_id ?? "n/a"} | ${item.merchant} | ${item.name.replaceAll("|", "/")} | ${item.price.toFixed(2)} | ${item.unit} | ${item.valid_to} |`,
   );
 
-  return [header, ...rows].join("\\n");
+  return [header, ...rows].join("\n");
 }
 
 function parseNumberFromUnitText(unitText) {
@@ -105,21 +195,10 @@ function parseGenericMarkdown(genericIngredientsMarkdown = "") {
 
     if (price == null) continue;
 
-    const record = {
-      id,
-      merchant,
-      name,
-      price,
-      quantity: quantity ?? 1,
-    };
+    const record = { id, merchant, name, price, quantity: quantity ?? 1 };
 
-    if (id) {
-      byId.set(id.toLowerCase(), record);
-    }
-
-    if (name) {
-      byName.set(name.toLowerCase(), record);
-    }
+    if (id) byId.set(id.toLowerCase(), record);
+    if (name) byName.set(name.toLowerCase(), record);
   }
 
   return { byId, byName };
@@ -147,13 +226,8 @@ function normalizeFlyers(flyerItems = []) {
       lon: toPriceNumber(item?.store_lon) ?? 0,
     };
 
-    if (flyerId != null) {
-      byFlyerId.set(flyerId, record);
-    }
-
-    if (name) {
-      byName.set(name.toLowerCase(), record);
-    }
+    if (flyerId != null) byFlyerId.set(flyerId, record);
+    if (name) byName.set(name.toLowerCase(), record);
   }
 
   return { byFlyerId, byName };
@@ -236,6 +310,7 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
       .map((item) => String(item).trim().toLowerCase())
       .filter(Boolean),
   );
+
   const defaultStore =
     flyerItems.find((item) => {
       const merchant = String(item?.merchant ?? item?.store_name ?? "").trim();
@@ -247,84 +322,91 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
     })?.merchant ??
     "IGA";
 
-  return plan.recipes.map((recipe) => {
-    let dominantMerchant = null;
-    let dominantLat = 0;
-    let dominantLon = 0;
+  return plan.recipes
+    .map((recipe) => {
+      let dominantMerchant = null;
+      let dominantLat = 0;
+      let dominantLon = 0;
 
-    const ingredients = recipe.ingredients
-      .map((ingredient) => {
-        if (ingredient.source_tier === "PANTRY") {
-          const pantryName = String(ingredient.name ?? "").trim().toLowerCase();
-          if (!pantrySet.has(pantryName)) {
-            return null;
+      const ingredients = recipe.ingredients
+        .map((ingredient) => {
+          if (ingredient.source_tier === "PANTRY") {
+            const pantryName = String(ingredient.name ?? "").trim().toLowerCase();
+            if (!pantrySet.has(pantryName)) return null;
+            return {
+              price: 0,
+              name: ingredient.name,
+              quantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
+              usedQuantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
+            };
+          }
+
+          const resolved = resolveIngredientPrice(ingredient, flyerIndex, genericIndex);
+          if (!resolved || resolved.price == null) return null;
+
+          const merchant = String(resolved.merchant ?? "").trim();
+          const isValidStore = merchant && merchant.toLowerCase() !== "statcan (qc)";
+          const isMajorStore = MAJOR_GROCERY_STORES.has(merchant);
+          const isSaleIngredient = ingredient.source_tier === "SALE";
+
+          if (!dominantMerchant && isSaleIngredient && isValidStore && isMajorStore) {
+            dominantMerchant = resolved.merchant;
+            dominantLat = resolved.lat;
+            dominantLon = resolved.lon;
           }
 
           return {
-            price: 0,
+            price: round2(resolved.price),
             name: ingredient.name,
             quantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
             usedQuantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
           };
-        }
+        })
+        .filter((item) => item !== null);
 
-        const resolved = resolveIngredientPrice(ingredient, flyerIndex, genericIndex);
-        if (!resolved || resolved.price == null) {
-          return null;
-        }
+      const hasPricedIngredient = ingredients.some((ingredient) => ingredient.price > 0);
+      if (!hasPricedIngredient) return null;
 
-        const merchant = String(resolved.merchant ?? "").trim();
-        const isValidStore = merchant && merchant.toLowerCase() !== "statcan (qc)";
-        const isMajorStore = MAJOR_GROCERY_STORES.has(merchant);
-        const isSaleIngredient = ingredient.source_tier === "SALE";
+      const priceForRecipe = round2(
+        ingredients.reduce((sum, ingredient) => {
+          if (!ingredient.quantity) return sum;
+          return sum + ingredient.price * (ingredient.usedQuantity / ingredient.quantity);
+        }, 0),
+      );
 
-        if (!dominantMerchant && isSaleIngredient && isValidStore && isMajorStore) {
-          dominantMerchant = resolved.merchant;
-          dominantLat = resolved.lat;
-          dominantLon = resolved.lon;
-        }
-
-        return {
-          price: round2(resolved.price),
-          name: ingredient.name,
-          quantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
-          usedQuantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
-        };
-      })
-      .filter((item) => item !== null);
-
-    const hasPricedIngredient = ingredients.some((ingredient) => ingredient.price > 0);
-    if (!hasPricedIngredient) {
-      return null;
-    }
-
-    const priceForRecipe = round2(
-      ingredients.reduce((sum, ingredient) => {
-        if (!ingredient.quantity) return sum;
-        return sum + ingredient.price * (ingredient.usedQuantity / ingredient.quantity);
-      }, 0),
-    );
-
-    return {
-      title: recipe.title,
-      store_name: dominantMerchant ?? defaultStore,
-      store_lat: dominantMerchant ? dominantLat : 0,
-      store_lon: dominantMerchant ? dominantLon : 0,
-      ingredients,
-      totalPrice: priceForRecipe,
-      priceForRecipe,
-      numberOfServings: recipe.numberOfServings,
-      description: recipe.description,
-      prepMinutes: recipe.prepMinutes,
-      cookMinutes: recipe.cookMinutes,
-    };
-  }).filter((recipe) => recipe !== null);
+      return {
+        title: recipe.title,
+        store_name: dominantMerchant ?? defaultStore,
+        // lat/lon are placeholders here — overwritten below with real OSM coords
+        store_lat: dominantMerchant ? dominantLat : 0,
+        store_lon: dominantMerchant ? dominantLon : 0,
+        ingredients,
+        totalPrice: priceForRecipe,
+        priceForRecipe,
+        numberOfServings: recipe.numberOfServings,
+        description: recipe.description,
+        prepMinutes: recipe.prepMinutes,
+        cookMinutes: recipe.cookMinutes,
+      };
+    })
+    .filter((recipe) => recipe !== null);
 }
 
+// ---------------------------------------------------------------------------
+// Main export
+// ---------------------------------------------------------------------------
 export async function generateOptimizedMealPlan({
   userRequest,
+<<<<<<< Updated upstream
   pantryItems,
   flyerItems,
+=======
+  userAddress,           // full address string, e.g. "4800 Rue Sherbrooke Ouest, Montréal"
+  userLat,               // number
+  userLon,               // number
+  pantryItems = ["salt", "pepper", "vegetable oil", "water"],
+  flyerItems = [],
+>>>>>>> Stashed changes
   genericIngredientsMarkdown = "",
   recipeCount = 3,
 }) {
@@ -361,11 +443,9 @@ ${flyerMarkdown}
 Generic fallback table:
 ${genericIngredientsMarkdown}`;
 
-  const schema = GeneratedPlanSchema;
-
   const { object } = await generateObject({
     model: google("gemini-3.1-flash-lite-preview"),
-    schema,
+    schema: GeneratedPlanSchema,
     messages: [
       { role: "system", content: system },
       { role: "user", content: user },
@@ -402,5 +482,30 @@ ${genericIngredientsMarkdown}`;
     throw new Error("No valid recipes left after removing ingredients with missing prices.");
   }
 
-  return mappedRecipes;
+  // -------------------------------------------------------------------------
+  // Enrich each recipe with real OSM store coordinates nearest to the user
+  // We deduplicate by store name so we only call OSM once per unique store
+  // -------------------------------------------------------------------------
+  const storeCache = new Map(); // store_name → { lat, lon } | null
+
+  const enriched = await Promise.all(
+    mappedRecipes.map(async (recipe) => {
+      const storeName = recipe.store_name;
+
+      if (!storeCache.has(storeName)) {
+        const location = await findNearestStoreLocation(storeName, userLat, userLon);
+        storeCache.set(storeName, location);
+      }
+
+      const location = storeCache.get(storeName);
+
+      return {
+        ...recipe,
+        store_lat: location?.lat ?? recipe.store_lat,
+        store_lon: location?.lon ?? recipe.store_lon,
+      };
+    }),
+  );
+
+  return enriched;
 }

@@ -19,7 +19,7 @@ async function addressToCoords(address) {
   };
 }
 
-async function getNearbySupermarkets(address, radiusMeters = 1000) {
+async function getNearbySupermarkets(address, radiusMeters = 15000) {
   const { lat, lon, displayName } = await addressToCoords(address);
   console.log(`📍 Resolved to: ${displayName}`);
 

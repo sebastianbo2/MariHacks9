@@ -18,6 +18,8 @@ export function MerchantResults({ query, mode, loading, onBack, data }: Props) {
   const recipes = data as Recipe[];
   const [activeRecipe, setActiveRecipe] = useState<Recipe | null>(null);
 
+  console.log(data);
+
   const cheapestPrice = recipes.length
     ? Math.min(...recipes.map((r) => r.priceForRecipe))
     : null;

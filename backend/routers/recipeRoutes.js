@@ -13,12 +13,17 @@ function normalizePostcode(postcode) {
 }
 
 router.post("/recipes", async (req, res) => {
+  console.log("Someone is connecting!")
+
   try {
     const {
       userRequest,
       pantryItems,
       genericIngredientsMarkdown = genericIngredients,
       postcode,
+      lat,
+      lon,
+      address,
       mealsPerFlyer = 3,
     } = req.body ?? {};
 
@@ -31,6 +36,15 @@ router.post("/recipes", async (req, res) => {
     if (!postcode || typeof postcode !== "string") {
       return res.status(400).json({
         error: "postcode is required and must be a string in format XXX XXX.",
+      });
+    }
+
+    const userLat = typeof lat === "number" ? lat : parseFloat(lat);
+    const userLon = typeof lon === "number" ? lon : parseFloat(lon);
+
+    if (isNaN(userLat) || isNaN(userLon)) {
+      return res.status(400).json({
+        error: "lat and lon are required and must be valid numbers.",
       });
     }
 
@@ -59,6 +73,9 @@ router.post("/recipes", async (req, res) => {
 
     const recipes = await generateOptimizedMealPlan({
       userRequest,
+      userAddress: address,
+      userLat,
+      userLon,
       pantryItems,
       flyerItems,
       genericIngredientsMarkdown,
@@ -67,6 +84,7 @@ router.post("/recipes", async (req, res) => {
 
     return res.json(recipes);
   } catch (error) {
+    console.log("AI error..")
     return res.status(500).json({
       error: error instanceof Error ? error.message : "Unknown AI generation error",
     });
