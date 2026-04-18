@@ -2,7 +2,13 @@ import axios from "axios";
 
 // GROCERY_STORES = ["Provigo", 'FreshCo', 'Walmart', 'Loblaws', "Maxi", "IGA", "Metro", "Super C", "T&T Supermarket"]
 const GROCERY_STORES = ["Provigo", "IGA", "Super C"];
-const log = console.log;
+
+function normalizePostalCode(postalCode) {
+  return String(postalCode ?? "")
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .replace(/[^A-Z0-9]/g, "");
+}
 
 export function generate_sid() {
   let sid = "";
@@ -21,13 +27,18 @@ export function generate_sid() {
  * @returns
  */
 export async function getFlyersByPostalCode(postalCode) {
+  const normalized = normalizePostalCode(postalCode);
+  if (!normalized) {
+    throw new Error("postalCode is required");
+  }
+
   const sid = generate_sid();
-  const url = `${process.env.FLYER_API_URL}data?locale=en&postal_code=${postalCode}&sid=${sid}`;
+  const url = `${process.env.FLYER_API_URL}data?locale=en&postal_code=${normalized}&sid=${sid}`;
   try {
     const resp = await axios.get(url);
     return resp;
   } catch (error) {
-    console.error("Could not fetch flyers by postal code:", error);
+    throw new Error(`Could not fetch flyers by postal code: ${error.message}`);
   }
 }
 
@@ -38,33 +49,23 @@ export async function getFlyersByPostalCode(postalCode) {
  */
 export async function getGroceryFlyerId(postalCode) {
   const responseData = await getFlyersByPostalCode(postalCode);
-  // log(responseData.data.flyers[0]);
-
-  if (!responseData.data.flyers) {
-    return null;
+  const flyers = responseData?.data?.flyers;
+  if (!Array.isArray(flyers)) {
+    return [];
   }
 
   const groceryFlyers = [];
 
-  let ctr = 0;
-  for (const flyer of responseData.data["flyers"]) {
-    if (ctr++ < 4) {
-      log(flyer);
-    }
+  for (const flyer of flyers) {
     const merchant = flyer["merchant"];
-    const categories = flyer["categories"] ?? [];
+    let categories = flyer["categories"] ?? [];
 
     if (typeof categories === "string") {
       categories = categories.split(",");
     }
 
-    log("-----------");
-    log(categories);
-    log(typeof categories);
-
     if (GROCERY_STORES.includes(merchant)) {
       if (categories.includes("Groceries")) {
-        log("Hello world");
         groceryFlyers.push({
           id: flyer["id"],
           merchant: merchant,
@@ -72,8 +73,6 @@ export async function getGroceryFlyerId(postalCode) {
       }
     }
   }
-
-  log(groceryFlyers);
 
   return groceryFlyers;
 }
@@ -89,42 +88,48 @@ export async function getFlyerItems(flyerId) {
     const resp = await axios.get(url);
     return resp;
   } catch (error) {
-    console.error(
-      "Error occured while getting flyer items from flyer id:",
-      error,
-    );
+    throw new Error(`Error occured while getting flyer items from flyer id: ${error.message}`);
   }
 }
 
-export async function getAllGroceries(postalCode) {
-  // regex to check postal code
+function toPriceNumber(value) {
+  if (typeof value === "number") return value;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
-  const grocery_flyers = await getGroceryFlyerId(postalCode);
-  if (grocery_flyers.length === 0) {
-    log("No grocery flyers found for postal code");
-    return;
+export async function getAllGroceries(postalCode) {
+  const groceryFlyers = await getGroceryFlyerId(postalCode);
+  if (groceryFlyers.length === 0) {
+    return [];
   }
 
-  log("Found some grocery flyers for postal code", postalCode);
+  const allItems = [];
 
-  for (const flyer of grocery_flyers) {
-    const flyerId = flyer["id"];
-    const merchant = flyer["merchant"];
-    log(`Processing ${merchant} flyer`);
+  for (const flyer of groceryFlyers) {
+    const flyerId = flyer.id;
+    const merchant = flyer.merchant;
+    const itemsResponse = await getFlyerItems(flyerId);
+    const items = Array.isArray(itemsResponse?.data) ? itemsResponse.data : [];
 
-    const items = await getFlyerItems(flyerId);
-    log(Object.keys(items));
-    log("merchant,flyer_id,name,price,valid_from,valid_to");
-
-    for (const item of items.data) {
-      log(
+    for (const item of items) {
+      const normalized = {
         merchant,
-        item.flyer_id,
-        item.name ?? "no name",
-        item.price ?? "no price",
-        item.valid_from ?? "",
-        item.valid_to ?? "",
-      );
+        flyer_id: item.flyer_id ?? flyerId,
+        name: item.name ?? "Unnamed item",
+        price: toPriceNumber(item.price),
+        valid_from: item.valid_from ?? null,
+        valid_to: item.valid_to ?? null,
+        store_name: merchant,
+        store_lat: 0,
+        store_lon: 0,
+      };
+
+      if (normalized.price != null) {
+        allItems.push(normalized);
+      }
     }
   }
+
+  return allItems;
 }

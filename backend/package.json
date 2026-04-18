@@ -12,11 +12,15 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@ai-sdk/google": "^3.0.64",
+    "@ai-sdk/xai": "^3.0.83",
+    "ai": "^6.0.168",
     "axios": "^1.15.0",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "expressjs": "^1.0.1",
     "node-fetch": "^3.3.2",
-    "nodemon": "^3.1.14"
+    "nodemon": "^3.1.14",
+    "zod": "^4.3.6"
   }
 }
