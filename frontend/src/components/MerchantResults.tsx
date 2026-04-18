@@ -1,6 +1,10 @@
-import { useState } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Clock, Users, MapPin, X, ShoppingBag, ChefHat, TrendingDown } from "lucide-react";
+import {
+  ArrowLeft, Clock, Users, MapPin, X,
+  ShoppingBag, ChefHat, TrendingDown,
+  ArrowUpDown, ArrowUp, ArrowDown, ExternalLink,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PrepMode } from "@/data/flyerData";
@@ -12,17 +16,180 @@ interface Props {
   loading: boolean;
   onBack: () => void;
   data: BackendResponse;
+  userLat?: number;
+  userLon?: number;
 }
 
-export function MerchantResults({ query, mode, loading, onBack, data }: Props) {
+type SortKey = "totalPrice" | "recipePrice" | "distance";
+type SortDir = "asc" | "desc";
+
+// ---------------------------------------------------------------------------
+// Haversine distance (km)
+// ---------------------------------------------------------------------------
+function toRadians(deg: number) {
+  return deg * (Math.PI / 180);
+}
+
+function calculateDistance(
+  userLat: number,
+  userLon: number,
+  storeLat: number,
+  storeLon: number
+): number {
+  if (!storeLat || !storeLon || !userLat || !userLon) return Infinity;
+  const R = 6371;
+  const dLat = toRadians(storeLat - userLat);
+  const dLon = toRadians(storeLon - userLon);
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRadians(userLat)) *
+      Math.cos(toRadians(storeLat)) *
+      Math.sin(dLon / 2) *
+      Math.sin(dLon / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function formatDistance(km: number): string {
+  if (km === Infinity) return "—";
+  if (km < 1) return `${Math.round(km * 1000)} m`;
+  return `${km.toFixed(1)} km`;
+}
+
+// ---------------------------------------------------------------------------
+// Nominatim reverse geocode → full address string
+// Returns something like "IGA, 6400, Rue Sherbrooke, Verdun, Montréal"
+// We then pass that as the query to Google Maps so it resolves the exact spot.
+// Rate limit: 1 req/sec — we stagger calls with a small delay.
+// ---------------------------------------------------------------------------
+async function reverseGeocode(lat: number, lon: number): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1`,
+      { headers: { "Accept-Language": "en", "User-Agent": "SmartCart/1.0" } }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    // Prefer the display_name which includes full civic address
+    return data?.display_name ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// Build a Google Maps search URL using the full address from Nominatim.
+// With a precise address as the query, Maps resolves to the exact listing.
+function googleMapsUrl(fullAddress: string, lat: number, lon: number): string {
+  const q = encodeURIComponent(fullAddress);
+  // The ll= param centers the map; combined with a precise address query
+  // Google Maps reliably opens the exact location rather than a broad search.
+  return `https://www.google.com/maps/search/?api=1&query=${q}`;
+}
+
+function openMaps(fullAddress: string, lat: number, lon: number) {
+  window.open(googleMapsUrl(fullAddress, lat, lon), "_blank", "noopener,noreferrer");
+}
+
+// ---------------------------------------------------------------------------
+// Hook: resolve full addresses for all stores via Nominatim (staggered)
+// ---------------------------------------------------------------------------
+function useStoreAddresses(recipes: Recipe[]): Map<string, string> {
+  // key: `${lat},${lon}`, value: resolved full address
+  const [addresses, setAddresses] = useState<Map<string, string>>(new Map());
+  const resolvedRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    if (!recipes.length) return;
+
+    // Deduplicate by coordinate pair
+    const unique = Array.from(
+      new Map(
+        recipes
+          .filter((r) => r.store_lat && r.store_lon)
+          .map((r) => [`${r.store_lat},${r.store_lon}`, r])
+      ).values()
+    );
+
+    // Stagger requests at 1.1s intervals to respect Nominatim's rate limit
+    unique.forEach((recipe, i) => {
+      const key = `${recipe.store_lat},${recipe.store_lon}`;
+      if (resolvedRef.current.has(key)) return;
+      resolvedRef.current.add(key);
+
+      setTimeout(async () => {
+        const address = await reverseGeocode(recipe.store_lat, recipe.store_lon);
+        if (address) {
+          setAddresses((prev) => {
+            const next = new Map(prev);
+            next.set(key, address);
+            return next;
+          });
+        }
+      }, i * 1100);
+    });
+  }, [recipes]);
+
+  return addresses;
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+export function MerchantResults({
+  query,
+  mode,
+  loading,
+  onBack,
+  data,
+  userLat = 0,
+  userLon = 0,
+}: Props) {
   const recipes = data as Recipe[];
   const [activeRecipe, setActiveRecipe] = useState<Recipe | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("recipePrice");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
 
-  console.log(data);
+  // Resolve full addresses for all stores in the background
+  const storeAddresses = useStoreAddresses(recipes);
 
   const cheapestPrice = recipes.length
     ? Math.min(...recipes.map((r) => r.priceForRecipe))
     : null;
+
+  const sortedRecipes = useMemo(() => {
+    return [...recipes].sort((a, b) => {
+      let valA: number;
+      let valB: number;
+
+      if (sortKey === "totalPrice") {
+        valA = a.totalPrice;
+        valB = b.totalPrice;
+      } else if (sortKey === "recipePrice") {
+        valA = a.priceForRecipe;
+        valB = b.priceForRecipe;
+      } else {
+        valA = calculateDistance(userLat, userLon, a.store_lat, a.store_lon);
+        valB = calculateDistance(userLat, userLon, b.store_lat, b.store_lon);
+      }
+
+      return sortDir === "asc" ? valA - valB : valB - valA;
+    });
+  }, [recipes, sortKey, sortDir, userLat, userLon]);
+
+  const handleSortKey = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  };
+
+  const modeLabel =
+    mode === "tonight"
+      ? "Just tonight"
+      : mode === "three-day"
+      ? "3-day prep"
+      : "Full week";
 
   return (
     <div className="min-h-screen bg-background">
@@ -37,11 +204,15 @@ export function MerchantResults({ query, mode, loading, onBack, data }: Props) {
             <ArrowLeft className="h-4 w-4" />
           </Button>
           <div className="min-w-0 flex-1">
-            <p className="text-xs uppercase tracking-wider text-muted-foreground">Plan for</p>
-            <p className="truncate font-display text-base font-semibold text-charcoal">"{query}"</p>
+            <p className="text-xs uppercase tracking-wider text-muted-foreground">
+              Plan for
+            </p>
+            <p className="truncate font-display text-base font-semibold text-charcoal">
+              "{query}"
+            </p>
           </div>
           <span className="hidden rounded-full bg-sage-soft px-3 py-1 text-xs font-medium text-sage-deep sm:inline">
-            {mode === "tonight" ? "Just tonight" : mode === "three-day" ? "3-day prep" : "Full week"}
+            {modeLabel}
           </span>
         </div>
       </header>
@@ -51,25 +222,94 @@ export function MerchantResults({ query, mode, loading, onBack, data }: Props) {
           <LoadingState />
         ) : recipes.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 text-center">
-            <p className="text-lg font-semibold text-charcoal">No recipes found</p>
-            <p className="mt-1 text-sm text-muted-foreground">Try a different search or location.</p>
+            <p className="text-lg font-semibold text-charcoal">
+              No recipes found
+            </p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Try a different search or location.
+            </p>
           </div>
         ) : (
-          <motion.div
-            initial="hidden"
-            animate="show"
-            variants={{ hidden: {}, show: { transition: { staggerChildren: 0.07 } } }}
-            className="space-y-4"
-          >
-            {recipes.map((recipe, i) => (
-              <RecipeCard
-                key={`${recipe.title}-${i}`}
-                recipe={recipe}
-                isCheapest={recipe.priceForRecipe === cheapestPrice}
-                onClick={() => setActiveRecipe(recipe)}
-              />
-            ))}
-          </motion.div>
+          <>
+            {/* Sort controls */}
+            <div className="mb-5 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium text-muted-foreground">
+                Sort by
+              </span>
+
+              {(["recipePrice", "totalPrice", "distance"] as SortKey[]).map(
+                (key) => {
+                  const labels: Record<SortKey, string> = {
+                    recipePrice: "Recipe price",
+                    totalPrice: "Total price",
+                    distance: "Distance",
+                  };
+                  const active = sortKey === key;
+                  return (
+                    <button
+                      key={key}
+                      onClick={() => handleSortKey(key)}
+                      className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
+                        active
+                          ? "border-sage-deep bg-sage-deep text-cream"
+                          : "border-border bg-card text-charcoal hover:border-sage hover:bg-muted"
+                      }`}
+                    >
+                      {labels[key]}
+                      {active ? (
+                        sortDir === "asc" ? (
+                          <ArrowUp className="h-3 w-3" />
+                        ) : (
+                          <ArrowDown className="h-3 w-3" />
+                        )
+                      ) : (
+                        <ArrowUpDown className="h-3 w-3 opacity-40" />
+                      )}
+                    </button>
+                  );
+                }
+              )}
+
+              <button
+                onClick={() =>
+                  setSortDir((d) => (d === "asc" ? "desc" : "asc"))
+                }
+                className="ml-auto flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 text-xs font-medium text-charcoal transition hover:border-sage hover:bg-muted"
+              >
+                {sortDir === "asc" ? (
+                  <>
+                    <ArrowUp className="h-3 w-3" /> Low → High
+                  </>
+                ) : (
+                  <>
+                    <ArrowDown className="h-3 w-3" /> High → Low
+                  </>
+                )}
+              </button>
+            </div>
+
+            <motion.div
+              initial="hidden"
+              animate="show"
+              variants={{
+                hidden: {},
+                show: { transition: { staggerChildren: 0.07 } },
+              }}
+              className="space-y-4"
+            >
+              {sortedRecipes.map((recipe, i) => (
+                <RecipeCard
+                  key={`${recipe.title}-${i}`}
+                  recipe={recipe}
+                  isCheapest={recipe.priceForRecipe === cheapestPrice}
+                  onClick={() => setActiveRecipe(recipe)}
+                  userLat={userLat}
+                  userLon={userLon}
+                  resolvedAddress={storeAddresses.get(`${recipe.store_lat},${recipe.store_lon}`)}
+                />
+              ))}
+            </motion.div>
+          </>
         )}
       </main>
 
@@ -77,21 +317,46 @@ export function MerchantResults({ query, mode, loading, onBack, data }: Props) {
         recipe={activeRecipe}
         isCheapest={activeRecipe?.priceForRecipe === cheapestPrice}
         onClose={() => setActiveRecipe(null)}
+        userLat={userLat}
+        userLon={userLon}
+        resolvedAddress={
+          activeRecipe
+            ? storeAddresses.get(`${activeRecipe.store_lat},${activeRecipe.store_lon}`)
+            : undefined
+        }
       />
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Recipe card
+// ---------------------------------------------------------------------------
 function RecipeCard({
   recipe,
   isCheapest,
   onClick,
+  userLat,
+  userLon,
+  resolvedAddress,
 }: {
   recipe: Recipe;
   isCheapest: boolean;
   onClick: () => void;
+  userLat: number;
+  userLon: number;
+  resolvedAddress?: string;
 }) {
   const totalMinutes = recipe.prepMinutes + recipe.cookMinutes;
+  const distance = calculateDistance(
+    userLat,
+    userLon,
+    recipe.store_lat,
+    recipe.store_lon
+  );
+
+  // Use the full Nominatim address if resolved, otherwise fall back to name only
+  const mapsQuery = resolvedAddress ?? (recipe.store_name as string);
 
   return (
     <motion.div
@@ -103,10 +368,11 @@ function RecipeCard({
         onClick={onClick}
         className="flex w-full items-start gap-4 px-5 py-5 text-left transition hover:bg-muted/30 sm:px-6"
       >
-        {/* Left: title + meta */}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="font-display text-lg font-semibold text-charcoal">{recipe.title}</h2>
+            <h2 className="font-display text-lg font-semibold text-charcoal">
+              {recipe.title}
+            </h2>
             {isCheapest && (
               <span className="inline-flex items-center gap-1 rounded-full bg-sage-deep px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cream">
                 <TrendingDown className="h-2.5 w-2.5" /> Best value
@@ -114,7 +380,9 @@ function RecipeCard({
             )}
           </div>
 
-          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">{recipe.description}</p>
+          <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
+            {recipe.description}
+          </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
             <span className="flex items-center gap-1">
@@ -123,16 +391,38 @@ function RecipeCard({
             </span>
             <span className="flex items-center gap-1">
               <Users className="h-3.5 w-3.5" />
-              {recipe.numberOfServings} serving{recipe.numberOfServings !== 1 ? "s" : ""}
+              {recipe.numberOfServings} serving
+              {recipe.numberOfServings !== 1 ? "s" : ""}
             </span>
             <span className="flex items-center gap-1">
               <MapPin className="h-3.5 w-3.5" />
-              {recipe.store_name}
+              {/* <a> inside <button> is invalid HTML — use span + openMaps() */}
+              <span
+                role="link"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openMaps(mapsQuery, recipe.store_lat, recipe.store_lon);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.stopPropagation();
+                    openMaps(mapsQuery, recipe.store_lat, recipe.store_lon);
+                  }
+                }}
+                className="cursor-pointer underline underline-offset-2 hover:text-sage-deep transition-colors"
+              >
+                {recipe.store_name}
+              </span>
+              {distance !== Infinity && (
+                <span className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-charcoal">
+                  {formatDistance(distance)}
+                </span>
+              )}
             </span>
           </div>
         </div>
 
-        {/* Right: price */}
         <div className="shrink-0 text-right">
           <p className="font-mono text-xl font-semibold text-charcoal">
             ${recipe.priceForRecipe.toFixed(2)}
@@ -148,22 +438,35 @@ function RecipeCard({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Recipe modal
+// ---------------------------------------------------------------------------
 function RecipeModal({
   recipe,
   isCheapest,
   onClose,
+  userLat,
+  userLon,
+  resolvedAddress,
 }: {
   recipe: Recipe | null;
   isCheapest: boolean;
   onClose: () => void;
+  userLat: number;
+  userLon: number;
+  resolvedAddress?: string;
 }) {
   const totalMinutes = recipe ? recipe.prepMinutes + recipe.cookMinutes : 0;
+  const distance = recipe
+    ? calculateDistance(userLat, userLon, recipe.store_lat, recipe.store_lon)
+    : Infinity;
+
+  const mapsQuery = resolvedAddress ?? (recipe?.store_name as string) ?? "";
 
   return (
     <AnimatePresence>
       {recipe && (
         <>
-          {/* Backdrop */}
           <motion.div
             key="backdrop"
             initial={{ opacity: 0 }}
@@ -174,7 +477,6 @@ function RecipeModal({
             className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
           />
 
-          {/* Modal */}
           <motion.div
             key="modal"
             initial={{ opacity: 0, scale: 0.95, y: 16 }}
@@ -197,7 +499,9 @@ function RecipeModal({
                       </span>
                     )}
                   </div>
-                  <p className="mt-1 text-sm text-muted-foreground">{recipe.description}</p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    {recipe.description}
+                  </p>
                 </div>
                 <button
                   onClick={onClose}
@@ -211,21 +515,38 @@ function RecipeModal({
               <div className="mt-4 flex flex-wrap gap-2">
                 <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal">
                   <Clock className="h-3.5 w-3.5 text-sage-deep" />
-                  {recipe.prepMinutes}m prep · {recipe.cookMinutes}m cook · {totalMinutes}m total
+                  {recipe.prepMinutes}m prep · {recipe.cookMinutes}m cook ·{" "}
+                  {totalMinutes}m total
                 </span>
                 <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal">
                   <Users className="h-3.5 w-3.5 text-sage-deep" />
-                  {recipe.numberOfServings} serving{recipe.numberOfServings !== 1 ? "s" : ""}
+                  {recipe.numberOfServings} serving
+                  {recipe.numberOfServings !== 1 ? "s" : ""}
                 </span>
-                <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal">
+                {/* Store pill — plain <a> is fine here, no parent <button> */}
+                <a
+                  href={googleMapsUrl(mapsQuery, recipe.store_lat, recipe.store_lon)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal transition hover:bg-sage-soft hover:text-sage-deep"
+                >
                   <MapPin className="h-3.5 w-3.5 text-sage-deep" />
                   {recipe.store_name}
-                </span>
+                  {distance !== Infinity && (
+                    <span className="font-semibold text-sage-deep">
+                      · {formatDistance(distance)}
+                    </span>
+                  )}
+                  <ExternalLink className="h-3 w-3 opacity-50" />
+                </a>
               </div>
             </div>
 
             {/* Scrollable body */}
-            <div className="overflow-y-auto" style={{ maxHeight: "calc(85vh - 190px)" }}>
+            <div
+              className="overflow-y-auto"
+              style={{ maxHeight: "calc(85vh - 190px)" }}
+            >
               {/* Ingredients */}
               <div className="px-6 py-5">
                 <div className="mb-3 flex items-center gap-1.5">
@@ -236,17 +557,25 @@ function RecipeModal({
                 </div>
                 <ul className="space-y-2.5">
                   {recipe.ingredients.map((ing, i) => (
-                    <li key={i} className="flex items-center justify-between gap-4">
-                      <div className="flex items-baseline gap-1.5 min-w-0">
-                        <span className="text-sm font-medium text-charcoal truncate">{ing.name}</span>
-                        <span className="text-xs text-muted-foreground shrink-0">
+                    <li
+                      key={i}
+                      className="flex items-center justify-between gap-4"
+                    >
+                      <div className="flex min-w-0 items-baseline gap-1.5">
+                        <span className="truncate text-sm font-medium text-charcoal">
+                          {ing.name}
+                        </span>
+                        <span className="shrink-0 text-xs text-muted-foreground">
                           × {ing.usedQuantity}
                           {ing.usedQuantity !== ing.quantity && (
-                            <span className="text-muted-foreground/50"> of {ing.quantity}</span>
+                            <span className="text-muted-foreground/50">
+                              {" "}
+                              of {ing.quantity}
+                            </span>
                           )}
                         </span>
                       </div>
-                      <span className="font-mono text-xs font-semibold text-charcoal shrink-0">
+                      <span className="shrink-0 font-mono text-xs font-semibold text-charcoal">
                         ${ing.price.toFixed(2)}
                       </span>
                     </li>
@@ -266,7 +595,9 @@ function RecipeModal({
                 </div>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Recipe cost</span>
+                    <span className="text-sm text-muted-foreground">
+                      Recipe cost
+                    </span>
                     <span className="font-mono text-sm font-semibold text-charcoal">
                       ${recipe.priceForRecipe.toFixed(2)}
                     </span>
@@ -274,15 +605,22 @@ function RecipeModal({
                   {recipe.totalPrice !== recipe.priceForRecipe && (
                     <>
                       <div className="flex items-center justify-between">
-                        <span className="text-sm text-muted-foreground">Total groceries</span>
+                        <span className="text-sm text-muted-foreground">
+                          Total groceries
+                        </span>
                         <span className="font-mono text-sm text-muted-foreground">
                           ${recipe.totalPrice.toFixed(2)}
                         </span>
                       </div>
                       <div className="flex items-center justify-between rounded-xl bg-sage-soft px-3 py-2">
-                        <span className="text-xs font-medium text-sage-deep">You save</span>
+                        <span className="text-xs font-medium text-sage-deep">
+                          You save
+                        </span>
                         <span className="font-mono text-xs font-semibold text-sage-deep">
-                          ${(recipe.totalPrice - recipe.priceForRecipe).toFixed(2)}
+                          $
+                          {(
+                            recipe.totalPrice - recipe.priceForRecipe
+                          ).toFixed(2)}
                         </span>
                       </div>
                     </>
@@ -297,11 +635,17 @@ function RecipeModal({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Loading skeleton
+// ---------------------------------------------------------------------------
 function LoadingState() {
   return (
     <div className="space-y-4">
       {[0, 1, 2].map((i) => (
-        <div key={i} className="overflow-hidden rounded-2xl border border-border bg-card p-5">
+        <div
+          key={i}
+          className="overflow-hidden rounded-2xl border border-border bg-card p-5"
+        >
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1 space-y-2">
               <Skeleton className="h-5 w-48" />

@@ -263,6 +263,8 @@ export default function App() {
             loading={false}      // already done — no need for skeleton
             onBack={handleBack}
             data={backendData}   // 👈 your backend data lands here
+            userLat={coords?.lat}
+            userLon={coords?.lon}
           />
         </motion.div>
       )}
