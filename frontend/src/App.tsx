@@ -19,7 +19,30 @@ interface Plan {
   pantry: string[];
 }
 
-// Shared page transition variants
+interface Ingredient {
+  price: number,
+  name: String,
+  quantity: number,
+  usedQuantity: number,
+}
+
+interface Recipe {
+  title: String,
+  store_name: String,
+  store_lat: number,
+  store_lon: number,
+  ingredients: Array<Ingredient>,
+  totalPrice: number,
+  priceForRecipe: number,
+  numberOfServings: number,
+  description: String,
+  prepMinutes: number,
+  cookMinutes: number,
+}
+
+// 👇 Shape of whatever your backend sends back — adjust to match your API
+export type BackendResponse = Recipe[]
+
 const pageVariants = {
   enter: { opacity: 0, y: 18 },
   center: { opacity: 1, y: 0 },
@@ -35,23 +58,52 @@ export default function App() {
   const [step, setStep] = useState<Step>("home");
   const [coords, setCoords] = useState<Coords | null>(null);
   const [plan, setPlan] = useState<Plan | null>(null);
+  const [backendData, setBackendData] = useState<BackendResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const handleSubmit = (query: string, mode: PrepMode, pantry: string[]) => {
     setPlan({ query, mode, pantry });
     setStep("address");
   };
 
-  const handleAddressSubmit = () => {
-    if (!coords) return;
+  const handleAddressSubmit = async () => {
+    if (!coords || !plan) return;
+
     setLoading(true);
-    setStep("results");
-    setTimeout(() => setLoading(false), 1400);
+    setError(null);
+
+    try {
+      const response = await fetch("http://localhost:3000/api/results", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: plan.query,
+          mode: plan.mode,
+          pantry: plan.pantry,
+          lat: coords.lat,
+          lon: coords.lon,
+          address: coords.address,
+        }),
+      });
+
+      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+
+      const data: BackendResponse = await response.json();
+      setBackendData(data);
+      setStep("results"); // only transition once data is ready
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Something went wrong");
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleBack = () => {
     setPlan(null);
     setCoords(null);
+    setBackendData(null);
+    setError(null);
     setStep("home");
   };
 
@@ -136,18 +188,55 @@ export default function App() {
                   )}
                 </AnimatePresence>
 
+                {/* Error message */}
+                <AnimatePresence>
+                  {error && (
+                    <motion.p
+                      key="error"
+                      initial={{ opacity: 0, y: 4 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0 }}
+                      className="text-sm text-red-500"
+                    >
+                      {error} — please try again.
+                    </motion.p>
+                  )}
+                </AnimatePresence>
+
                 <motion.button
                   onClick={handleAddressSubmit}
-                  disabled={!coords}
+                  disabled={!coords || loading}
                   whileTap={{ scale: 0.97 }}
-                  className="mt-2 w-full max-w-[520px] rounded-2xl bg-sage-deep px-6 py-4 text-base font-semibold text-cream shadow-md transition hover:bg-sage-deep/90 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="relative mt-2 w-full max-w-[520px] rounded-2xl bg-sage-deep px-6 py-4 text-base font-semibold text-cream shadow-md transition hover:bg-sage-deep/90 disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  Find deals →
+                  <AnimatePresence mode="wait">
+                    {loading ? (
+                      <motion.span
+                        key="loading"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="flex items-center justify-center gap-2"
+                      >
+                        <Spinner /> Finding deals…
+                      </motion.span>
+                    ) : (
+                      <motion.span
+                        key="idle"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                      >
+                        Find deals →
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
                 </motion.button>
 
                 <button
                   onClick={() => setStep("home")}
-                  className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+                  disabled={loading}
+                  className="text-xs text-muted-foreground underline-offset-2 hover:underline disabled:pointer-events-none disabled:opacity-40"
                 >
                   ← Back
                 </button>
@@ -157,7 +246,7 @@ export default function App() {
         </motion.div>
       )}
 
-      {step === "results" && plan && (
+      {step === "results" && plan && backendData && (
         <motion.div
           key="results"
           variants={pageVariants}
@@ -169,11 +258,27 @@ export default function App() {
           <MerchantResults
             query={plan.query}
             mode={plan.mode}
-            loading={loading}
+            loading={false}      // already done — no need for skeleton
             onBack={handleBack}
+            data={backendData}   // 👈 your backend data lands here
           />
         </motion.div>
       )}
     </AnimatePresence>
+  );
+}
+
+// Small inline spinner so we don't need an extra import
+function Spinner() {
+  return (
+    <svg
+      className="h-4 w-4 animate-spin"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2.5}
+    >
+      <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83" />
+    </svg>
   );
 }

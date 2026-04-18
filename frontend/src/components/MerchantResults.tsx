@@ -4,6 +4,7 @@ import { ArrowLeft, TrendingDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RecipeDialog } from "./RecipeDialog";
+import { BackendResponse } from "@/App";
 import {
   buildResults,
   merchantTotal,
@@ -19,6 +20,7 @@ interface Props {
   mode: PrepMode;
   loading: boolean;
   onBack: () => void;
+  data: BackendResponse;
 }
 
 export function MerchantResults({ query, mode, loading, onBack }: Props) {
