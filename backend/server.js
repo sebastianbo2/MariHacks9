@@ -31,31 +31,30 @@ app.get("/", (req, res) => {
 })
 
 app.post("/api/recipes", (req, res) => {
-    const postal_code = req.body.postcode;
+  const postal_code = req.body.postcode;
+  log("Postal Code:", postal_code);
 
-    log("Postal Code:", postal_code);
+  res.json([  // ← array, and use res.json() not res.send(JSON.stringify())
+    {
+      title: "Chicken Pasta",
+      store_name: "IGA",
+      store_lat: 1,
+      store_lon: 1,
+      ingredients: [
+        { price: 5, name: "Chicken", quantity: 5, usedQuantity: 2 },
+        { price: 3, name: "Pasta", quantity: 100, usedQuantity: 50 }
+      ],
+      totalPrice: 100,
+      priceForRecipe: 50,
+      numberOfServings: 3,
+      description: "Cool chicken pasta really nice",
+      prepMinutes: 15,
+      cookMinutes: 20,
+    }
+  ]);
+});
 
-    res.send(JSON.stringify({
-        
-  title: "Chicken Pasta",
-  store_name: "IGA",
-  store_lat: 1,
-  store_lon: 1,
-  ingredients: [
-    {price: 5, name: "Chicken", quantity: 5, unit: "lbs", usedQuantity: 2},
-    {price: 3, name: "Pasta", quantity: 100, unit: "g", usedQuantity: 50}
-  ],
-  totalPrice: 100,
-  priceForRecipe: 50,
-  numberOfServings: 3,
-  description: "Cool chicken pasta really nice",
-  prepMinutes: 15,
-  cookMinutes: 20,
-
-    }))
-})
-
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT || 8000
 app.listen(PORT, () => {
     log("Server is listening on port", PORT)
 })

@@ -20,14 +20,14 @@ interface Plan {
   pantry: string[];
 }
 
-interface Ingredient {
+export interface Ingredient {
   price: number,
   name: String,
   quantity: number,
   usedQuantity: number,
 }
 
-interface Recipe {
+export interface Recipe {
   title: String,
   store_name: String,
   store_lat: number,
