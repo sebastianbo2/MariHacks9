@@ -225,19 +225,17 @@ function resolveIngredientPrice(ingredient, flyerIndex, genericIndex) {
     };
   }
 
-  return {
-    price: 0,
-    quantity: ingredient.usedQuantity,
-    usedQuantity: ingredient.usedQuantity,
-    merchant: null,
-    lat: 0,
-    lon: 0,
-  };
+  return null;
 }
 
-function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown) {
+function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pantryItems = []) {
   const flyerIndex = normalizeFlyers(flyerItems);
   const genericIndex = parseGenericMarkdown(genericIngredientsMarkdown);
+  const pantrySet = new Set(
+    (Array.isArray(pantryItems) ? pantryItems : [])
+      .map((item) => String(item).trim().toLowerCase())
+      .filter(Boolean),
+  );
   const defaultStore =
     flyerItems.find((item) => {
       const merchant = String(item?.merchant ?? item?.store_name ?? "").trim();
@@ -254,27 +252,51 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown) {
     let dominantLat = 0;
     let dominantLon = 0;
 
-    const ingredients = recipe.ingredients.map((ingredient) => {
-      const resolved = resolveIngredientPrice(ingredient, flyerIndex, genericIndex);
+    const ingredients = recipe.ingredients
+      .map((ingredient) => {
+        if (ingredient.source_tier === "PANTRY") {
+          const pantryName = String(ingredient.name ?? "").trim().toLowerCase();
+          if (!pantrySet.has(pantryName)) {
+            return null;
+          }
 
-      const merchant = String(resolved.merchant ?? "").trim();
-      const isValidStore = merchant && merchant.toLowerCase() !== "statcan (qc)";
-      const isMajorStore = MAJOR_GROCERY_STORES.has(merchant);
-      const isSaleIngredient = ingredient.source_tier === "SALE";
+          return {
+            price: 0,
+            name: ingredient.name,
+            quantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
+            usedQuantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
+          };
+        }
 
-      if (!dominantMerchant && isSaleIngredient && isValidStore && isMajorStore) {
-        dominantMerchant = resolved.merchant;
-        dominantLat = resolved.lat;
-        dominantLon = resolved.lon;
-      }
+        const resolved = resolveIngredientPrice(ingredient, flyerIndex, genericIndex);
+        if (!resolved || resolved.price == null) {
+          return null;
+        }
 
-      return {
-        price: round2(resolved.price),
-        name: ingredient.name,
-        quantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
-        usedQuantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
-      };
-    });
+        const merchant = String(resolved.merchant ?? "").trim();
+        const isValidStore = merchant && merchant.toLowerCase() !== "statcan (qc)";
+        const isMajorStore = MAJOR_GROCERY_STORES.has(merchant);
+        const isSaleIngredient = ingredient.source_tier === "SALE";
+
+        if (!dominantMerchant && isSaleIngredient && isValidStore && isMajorStore) {
+          dominantMerchant = resolved.merchant;
+          dominantLat = resolved.lat;
+          dominantLon = resolved.lon;
+        }
+
+        return {
+          price: round2(resolved.price),
+          name: ingredient.name,
+          quantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
+          usedQuantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
+        };
+      })
+      .filter((item) => item !== null);
+
+    const hasPricedIngredient = ingredients.some((ingredient) => ingredient.price > 0);
+    if (!hasPricedIngredient) {
+      return null;
+    }
 
     const priceForRecipe = round2(
       ingredients.reduce((sum, ingredient) => {
@@ -296,7 +318,7 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown) {
       prepMinutes: recipe.prepMinutes,
       cookMinutes: recipe.cookMinutes,
     };
-  });
+  }).filter((recipe) => recipe !== null);
 }
 
 export async function generateOptimizedMealPlan({
@@ -323,10 +345,11 @@ Rules:
 2) Use SALE ingredients first when possible.
 3) If not found in flyers, use GENERIC ingredients.
 4) GENERIC (StatCan QC) is Tier 2 fallback only when flyer data is missing for needed ingredients.
-4) PANTRY items are allowed and should be marked as PANTRY.
-5) For SALE include flyer_id. For GENERIC include generic_id.
-6) Ingredient usedQuantity should be a positive number.
-7) Generate exactly ${recipeCount} recipes.`;
+5) PANTRY items are allowed and should be marked as PANTRY.
+6) For SALE include flyer_id. For GENERIC include generic_id.
+7) Ingredient usedQuantity should be a positive number.
+8) Never include a SALE or GENERIC ingredient when its price cannot be found.
+9) Generate exactly ${recipeCount} recipes.`;
 
   const user = `User intent: ${userRequest}
 
@@ -341,7 +364,7 @@ ${genericIngredientsMarkdown}`;
   const schema = GeneratedPlanSchema;
 
   const { object } = await generateObject({
-    model: google("gemini-2.5-flash-lite"),
+    model: google("gemini-3.1-flash-lite-preview"),
     schema,
     messages: [
       { role: "system", content: system },
@@ -368,9 +391,16 @@ ${genericIngredientsMarkdown}`;
     throw new Error("AI did not return any recipes.");
   }
 
-  return mapToFrontendRecipes(
+  const mappedRecipes = mapToFrontendRecipes(
     { recipes: normalizedRecipes },
     flyerItems,
     genericIngredientsMarkdown,
+    pantryItems,
   );
+
+  if (!Array.isArray(mappedRecipes) || mappedRecipes.length === 0) {
+    throw new Error("No valid recipes left after removing ingredients with missing prices.");
+  }
+
+  return mappedRecipes;
 }
