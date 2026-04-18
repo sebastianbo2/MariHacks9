@@ -125,7 +125,7 @@ function RecipeCard({
             </span>
             <span className="flex items-center gap-1">
               <MapPin className="h-3.5 w-3.5" />
-              {recipe.store_name}
+              {recipe.store_name} · {recipe.distanceKm} km
             </span>
           </div>
         </div>
@@ -133,13 +133,12 @@ function RecipeCard({
         {/* Right: price */}
         <div className="shrink-0 text-right">
           <p className="font-mono text-xl font-semibold text-charcoal">
-            ${recipe.priceForRecipe.toFixed(2)}
+            ${recipe.totalPrice.toFixed(2)}
           </p>
-          {recipe.totalPrice !== recipe.priceForRecipe && (
-            <p className="text-[11px] text-muted-foreground">
-              ${recipe.totalPrice.toFixed(2)} groceries
-            </p>
-          )}
+          <p className="text-[11px] text-muted-foreground">
+            ${recipe.priceForRecipe.toFixed(2)} for {recipe.numberOfServings} serving
+            {recipe.numberOfServings !== 1 ? "s" : ""}
+          </p>
         </div>
       </button>
     </motion.div>
@@ -217,39 +216,89 @@ function RecipeModal({
                 </span>
                 <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal">
                   <MapPin className="h-3.5 w-3.5 text-sage-deep" />
-                  {recipe.store_name}
+                  {recipe.store_name} · {recipe.distanceKm} km away
                 </span>
               </div>
             </div>
 
             {/* Scrollable body */}
             <div className="overflow-y-auto" style={{ maxHeight: "calc(85vh - 190px)" }}>
-              {/* Ingredients */}
+              {/* What to buy */}
               <div className="px-6 py-5">
                 <div className="mb-3 flex items-center gap-1.5">
                   <ShoppingBag className="h-4 w-4 text-sage-deep" />
+                  <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
+                    What to buy
+                  </p>
+                </div>
+                <ul className="space-y-2.5">
+                  {recipe.buyItems.map((item, i) => (
+                    <li key={`${item.name}-${i}`} className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-charcoal">{item.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {item.quantity} {item.unit}
+                        </p>
+                      </div>
+                      <span className="font-mono text-sm font-semibold text-charcoal shrink-0">
+                        ${item.price.toFixed(2)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="mx-6 border-t border-border" />
+
+              {/* Ingredients */}
+              <div className="px-6 py-5">
+                <div className="mb-3 flex items-center gap-1.5">
+                  <ChefHat className="h-4 w-4 text-sage-deep" />
                   <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
                     Ingredients
                   </p>
                 </div>
                 <ul className="space-y-2.5">
                   {recipe.ingredients.map((ing, i) => (
-                    <li key={i} className="flex items-center justify-between gap-4">
-                      <div className="flex items-baseline gap-1.5 min-w-0">
-                        <span className="text-sm font-medium text-charcoal truncate">{ing.name}</span>
-                        <span className="text-xs text-muted-foreground shrink-0">
-                          × {ing.usedQuantity}
-                          {ing.usedQuantity !== ing.quantity && (
-                            <span className="text-muted-foreground/50"> of {ing.quantity}</span>
-                          )}
-                        </span>
+                    <li key={`${ing.name}-${i}`} className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-charcoal">
+                          {ing.usedQuantity} {ing.unit} {ing.name}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">from {ing.sourceItemName}</p>
                       </div>
-                      <span className="font-mono text-xs font-semibold text-charcoal shrink-0">
+                      <span className="font-mono text-xs font-medium text-muted-foreground shrink-0">
                         ${ing.price.toFixed(2)}
                       </span>
                     </li>
                   ))}
                 </ul>
+              </div>
+
+              <div className="mx-6 border-t border-border" />
+
+              {/* Instructions */}
+              <div className="px-6 py-5">
+                <div className="mb-3 flex items-center gap-1.5">
+                  <ChefHat className="h-4 w-4 text-sage-deep" />
+                  <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
+                    Instructions
+                  </p>
+                </div>
+                {Array.isArray(recipe.instructions) && recipe.instructions.length > 0 ? (
+                  <ol className="space-y-2">
+                    {recipe.instructions.map((step, i) => (
+                      <li key={`${recipe.title}-step-${i}`} className="flex gap-3">
+                        <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-sage-soft text-[11px] font-semibold text-sage-deep">
+                          {i + 1}
+                        </span>
+                        <p className="text-sm leading-relaxed text-charcoal/90">{step}</p>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No instructions provided.</p>
+                )}
               </div>
 
               <div className="mx-6 border-t border-border" />
@@ -264,27 +313,21 @@ function RecipeModal({
                 </div>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm text-muted-foreground">Recipe cost</span>
+                    <span className="text-sm text-muted-foreground">Total price</span>
                     <span className="font-mono text-sm font-semibold text-charcoal">
+                      ${recipe.totalPrice.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Price for recipe</span>
+                    <span className="font-mono text-sm text-muted-foreground">
                       ${recipe.priceForRecipe.toFixed(2)}
                     </span>
                   </div>
-                  {recipe.totalPrice !== recipe.priceForRecipe && (
-                    <>
-                      <div className="flex items-center justify-between">
-                        <span className="text-sm text-muted-foreground">Total groceries</span>
-                        <span className="font-mono text-sm text-muted-foreground">
-                          ${recipe.totalPrice.toFixed(2)}
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between rounded-xl bg-sage-soft px-3 py-2">
-                        <span className="text-xs font-medium text-sage-deep">You save</span>
-                        <span className="font-mono text-xs font-semibold text-sage-deep">
-                          ${(recipe.totalPrice - recipe.priceForRecipe).toFixed(2)}
-                        </span>
-                      </div>
-                    </>
-                  )}
+                  <p className="text-xs text-muted-foreground">
+                    Price for recipe for {recipe.numberOfServings} serving
+                    {recipe.numberOfServings !== 1 ? "s" : ""}.
+                  </p>
                 </div>
               </div>
             </div>

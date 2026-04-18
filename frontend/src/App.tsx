@@ -22,21 +22,35 @@ interface Plan {
 
 export interface Ingredient {
   price: number,
-  name: String,
+  name: string,
+  sourceItemName: string,
+  sourceTier: "SALE" | "GENERIC" | "PANTRY",
+  unit: string,
   quantity: number,
   usedQuantity: number,
 }
 
+export interface BuyItem {
+  name: string,
+  sourceTier: "SALE" | "GENERIC",
+  unit: string,
+  quantity: number,
+  price: number,
+}
+
 export interface Recipe {
-  title: String,
-  store_name: String,
+  title: string,
+  store_name: string,
   store_lat: number,
   store_lon: number,
+  distanceKm: number,
+  instructions: string[],
+  buyItems: Array<BuyItem>,
   ingredients: Array<Ingredient>,
   totalPrice: number,
   priceForRecipe: number,
   numberOfServings: number,
-  description: String,
+  description: string,
   prepMinutes: number,
   cookMinutes: number,
 }
@@ -71,6 +85,11 @@ export default function App() {
   const handleAddressSubmit = async () => {
     if (!coords || !plan) return;
 
+    if (!coords.postcode) {
+      setError("Please select an address with a valid postal code.");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
@@ -79,17 +98,24 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          query: plan.query,
-          mode: plan.mode,
-          pantry: plan.pantry,
-          lat: coords.lat,
-          lon: coords.lon,
-          address: coords.address,
+          userRequest: plan.query,
+          pantryItems: plan.pantry,
           postcode: coords.postcode,
         }),
       });
 
-      if (!response.ok) throw new Error(`Server error: ${response.status}`);
+      if (!response.ok) {
+        let message = `Server error: ${response.status}`;
+        try {
+          const errBody = await response.json();
+          if (typeof errBody?.error === "string") {
+            message = errBody.error;
+          }
+        } catch {
+          // Keep default message if response is not JSON.
+        }
+        throw new Error(message);
+      }
 
       const data: BackendResponse = await response.json();
       setBackendData(data);
