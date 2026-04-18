@@ -1,5 +1,8 @@
-import express from "express";
-import "dotenv/config";
+import express from 'express';
+import axios from 'axios';
+import fetch from "node-fetch";
+import cors from 'cors';
+import "dotenv/config"
 
 import recipeRoutes from "./routers/recipeRoutes.js";
 
@@ -7,7 +10,8 @@ const log = console.log;
 
 const app = express();
 app.use(express.json());
-app.use('/api/ai', recipeRoutes);
+app.use(cors());
+// app.use('/api/ai', recipeRoutes);
 
 // log("key: ", process.env.API_KEY)
 
@@ -28,7 +32,7 @@ app.get("/", (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 8000;
 app.listen(PORT, () => {
   log("Server is listening on port", PORT);
 });
