@@ -1,9 +1,33 @@
 import { generateObject } from "ai";
 import { google } from "@ai-sdk/google";
 import { z } from "zod";
+
+const SafeIngredientSchema = z.object({
+  name: z.string().catch("Unnamed ingredient"),
+  usedQuantity: z.number().positive().catch(1),
+  unit: z.string().min(1).catch("unit"),
+  source_tier: z.enum(["SALE", "GENERIC", "PANTRY"]).catch("GENERIC"),
+  flyer_id: z.number().int().nullable().optional().catch(null),
+  generic_id: z.string().nullable().optional().catch(null),
+});
+
+const SafeRecipeSchema = z.object({
+  title: z.string().catch("Untitled recipe"),
+  description: z.string().catch(""),
+  numberOfServings: z.number().int().min(1).catch(1),
+  prepMinutes: z.number().int().min(0).catch(10),
+  cookMinutes: z.number().int().min(0).catch(20),
+  instructions: z.array(z.string().min(1)).catch([]),
+  ingredients: z.array(SafeIngredientSchema).catch([]),
+});
+
+const SafeGeneratedPlanSchema = z.object({
+  recipes: z.array(SafeRecipeSchema).min(1),
+});
 const PlannedIngredientSchema = z.object({
   name: z.string(),
   usedQuantity: z.number().positive(),
+  unit: z.string().min(1),
   source_tier: z.enum(["SALE", "GENERIC", "PANTRY"]),
   flyer_id: z.number().int().nullable(),
   generic_id: z.string().nullable(),
@@ -15,6 +39,7 @@ const PlannedRecipeSchema = z.object({
   numberOfServings: z.number().int().min(1),
   prepMinutes: z.number().int().min(0),
   cookMinutes: z.number().int().min(0),
+  instructions: z.array(z.string().min(1)).min(2),
   ingredients: z.array(PlannedIngredientSchema).min(1),
 });
 
@@ -46,6 +71,28 @@ function toPriceNumber(value) {
 
 function round2(value) {
   return Math.round(value * 100) / 100;
+}
+
+function normalizeUnit(unit) {
+  const normalized = String(unit ?? "unit").trim().toLowerCase();
+  if (!normalized) return "unit";
+
+  const aliases = new Map([
+    ["grams", "g"],
+    ["gram", "g"],
+    ["kilograms", "kg"],
+    ["kilogram", "kg"],
+    ["milliliters", "ml"],
+    ["milliliter", "ml"],
+    ["liters", "l"],
+    ["liter", "l"],
+    ["lbs", "lb"],
+    ["pieces", "piece"],
+    ["pcs", "piece"],
+    ["servings", "serving"],
+  ]);
+
+  return aliases.get(normalized) ?? normalized;
 }
 
 function compactFlyersForPrompt(items, maxRows = 350) {
@@ -110,7 +157,8 @@ function parseGenericMarkdown(genericIngredientsMarkdown = "") {
       merchant,
       name,
       price,
-      quantity: quantity ?? 1,
+      soldQuantity: quantity ?? 1,
+      soldUnit: normalizeUnit(cells[4] ?? "unit"),
     };
 
     if (id) {
@@ -142,7 +190,8 @@ function normalizeFlyers(flyerItems = []) {
       merchant,
       name,
       price,
-      quantity: 1,
+      soldQuantity: parseNumberFromUnitText(String(item?.unit ?? "")) ?? 1,
+      soldUnit: normalizeUnit(item?.unit ?? "unit"),
       lat: toPriceNumber(item?.store_lat) ?? 0,
       lon: toPriceNumber(item?.store_lon) ?? 0,
     };
@@ -165,8 +214,10 @@ function resolveIngredientPrice(ingredient, flyerIndex, genericIndex) {
   if (source === "PANTRY") {
     return {
       price: 0,
-      quantity: ingredient.usedQuantity,
+      soldQuantity: ingredient.usedQuantity,
+      soldUnit: normalizeUnit(ingredient.unit),
       usedQuantity: ingredient.usedQuantity,
+      sourceItemName: `PANTRY: ${ingredient.name}`,
       merchant: null,
       lat: 0,
       lon: 0,
@@ -179,8 +230,10 @@ function resolveIngredientPrice(ingredient, flyerIndex, genericIndex) {
       const match = flyerIndex.byFlyerId.get(flyerId);
       return {
         price: match.price,
-        quantity: ingredient.usedQuantity,
+        soldQuantity: match.soldQuantity ?? 1,
+        soldUnit: normalizeUnit(match.soldUnit),
         usedQuantity: ingredient.usedQuantity,
+        sourceItemName: match.name,
         merchant: match.merchant,
         lat: match.lat,
         lon: match.lon,
@@ -191,8 +244,10 @@ function resolveIngredientPrice(ingredient, flyerIndex, genericIndex) {
     if (byName) {
       return {
         price: byName.price,
-        quantity: ingredient.usedQuantity,
+        soldQuantity: byName.soldQuantity ?? 1,
+        soldUnit: normalizeUnit(byName.soldUnit),
         usedQuantity: ingredient.usedQuantity,
+        sourceItemName: byName.name,
         merchant: byName.merchant,
         lat: byName.lat,
         lon: byName.lon,
@@ -205,8 +260,12 @@ function resolveIngredientPrice(ingredient, flyerIndex, genericIndex) {
     const match = genericIndex.byId.get(genericId);
     return {
       price: match.price,
-      quantity: ingredient.usedQuantity,
+      soldQuantity: match.soldQuantity ?? 1,
+      soldUnit: normalizeUnit(match.soldUnit),
       usedQuantity: ingredient.usedQuantity,
+      sourceItemName: match.name.toLowerCase().startsWith("generic:")
+        ? match.name
+        : `GENERIC: ${match.name}`,
       merchant: match.merchant,
       lat: 0,
       lon: 0,
@@ -217,8 +276,12 @@ function resolveIngredientPrice(ingredient, flyerIndex, genericIndex) {
   if (genericByName) {
     return {
       price: genericByName.price,
-      quantity: ingredient.usedQuantity,
+      soldQuantity: genericByName.soldQuantity ?? 1,
+      soldUnit: normalizeUnit(genericByName.soldUnit),
       usedQuantity: ingredient.usedQuantity,
+      sourceItemName: genericByName.name.toLowerCase().startsWith("generic:")
+        ? genericByName.name
+        : `GENERIC: ${genericByName.name}`,
       merchant: genericByName.merchant,
       lat: 0,
       lon: 0,
@@ -251,6 +314,7 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
     let dominantMerchant = null;
     let dominantLat = 0;
     let dominantLon = 0;
+    const buyMap = new Map();
 
     const ingredients = recipe.ingredients
       .map((ingredient) => {
@@ -263,6 +327,9 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
           return {
             price: 0,
             name: ingredient.name,
+            sourceItemName: `PANTRY: ${ingredient.name}`,
+            unit: normalizeUnit(ingredient.unit),
+            sourceTier: "PANTRY",
             quantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
             usedQuantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
           };
@@ -284,11 +351,31 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
           dominantLon = resolved.lon;
         }
 
+        const soldQuantity = round2(Math.max(resolved.soldQuantity ?? 1, 0.01));
+        const usedQuantity = round2(Math.max(ingredient.usedQuantity, 0.01));
+        const usedPrice = round2(resolved.price * (usedQuantity / soldQuantity));
+        const sourceTier = ingredient.source_tier;
+        const sourceItemName = String(resolved.sourceItemName ?? ingredient.name);
+
+        const buyKey = `${sourceTier}|${sourceItemName.toLowerCase()}`;
+        if (!buyMap.has(buyKey)) {
+          buyMap.set(buyKey, {
+            name: sourceItemName,
+            unit: normalizeUnit(resolved.soldUnit),
+            quantity: soldQuantity,
+            sourceTier,
+            price: round2(resolved.price),
+          });
+        }
+
         return {
-          price: round2(resolved.price),
+          price: usedPrice,
           name: ingredient.name,
-          quantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
-          usedQuantity: round2(Math.max(ingredient.usedQuantity, 0.01)),
+          sourceItemName,
+          unit: normalizeUnit(ingredient.unit || resolved.soldUnit),
+          sourceTier,
+          quantity: soldQuantity,
+          usedQuantity,
         };
       })
       .filter((item) => item !== null);
@@ -300,9 +387,13 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
 
     const priceForRecipe = round2(
       ingredients.reduce((sum, ingredient) => {
-        if (!ingredient.quantity) return sum;
-        return sum + ingredient.price * (ingredient.usedQuantity / ingredient.quantity);
+        return sum + ingredient.price;
       }, 0),
+    );
+
+    const buyItems = Array.from(buyMap.values());
+    const totalPrice = round2(
+      buyItems.reduce((sum, item) => sum + item.price, 0),
     );
 
     return {
@@ -310,8 +401,11 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
       store_name: dominantMerchant ?? defaultStore,
       store_lat: dominantMerchant ? dominantLat : 0,
       store_lon: dominantMerchant ? dominantLon : 0,
+      distanceKm: 1,
+      instructions: recipe.instructions,
+      buyItems,
       ingredients,
-      totalPrice: priceForRecipe,
+      totalPrice,
       priceForRecipe,
       numberOfServings: recipe.numberOfServings,
       description: recipe.description,
@@ -323,8 +417,8 @@ function mapToFrontendRecipes(plan, flyerItems, genericIngredientsMarkdown, pant
 
 export async function generateOptimizedMealPlan({
   userRequest,
-  pantryItems,
-  flyerItems,
+  pantryItems = [],
+  flyerItems = [],
   genericIngredientsMarkdown = "",
   recipeCount = 3,
 }) {
@@ -348,8 +442,10 @@ Rules:
 5) PANTRY items are allowed and should be marked as PANTRY.
 6) For SALE include flyer_id. For GENERIC include generic_id.
 7) Ingredient usedQuantity should be a positive number.
-8) Never include a SALE or GENERIC ingredient when its price cannot be found.
-9) Generate exactly ${recipeCount} recipes.`;
+8) Every ingredient must include a relevant unit.
+9) Never include a SALE or GENERIC ingredient when its price cannot be found.
+10) Every recipe must include step-by-step instructions.
+11) Generate exactly ${recipeCount} recipes.`;
 
   const user = `User intent: ${userRequest}
 
@@ -361,7 +457,7 @@ ${flyerMarkdown}
 Generic fallback table:
 ${genericIngredientsMarkdown}`;
 
-  const schema = GeneratedPlanSchema;
+  const schema = SafeGeneratedPlanSchema;
 
   const { object } = await generateObject({
     model: google("gemini-3.1-flash-lite-preview"),
@@ -389,6 +485,29 @@ ${genericIngredientsMarkdown}`;
 
   if (normalizedRecipes.length === 0) {
     throw new Error("AI did not return any recipes.");
+  }
+
+  normalizedRecipes = normalizedRecipes
+    .map((recipe) => {
+      const safeIngredients = Array.isArray(recipe.ingredients) ? recipe.ingredients : [];
+      const safeInstructions = Array.isArray(recipe.instructions) ? recipe.instructions : [];
+
+      return {
+        ...recipe,
+        instructions:
+          safeInstructions.length > 0
+            ? safeInstructions
+            : [
+                `Prep the ingredients for ${recipe.title}.`,
+                `Cook and season, then serve warm.`,
+              ],
+        ingredients: safeIngredients,
+      };
+    })
+    .filter((recipe) => recipe.ingredients.length > 0);
+
+  if (normalizedRecipes.length === 0) {
+    throw new Error("AI did not return any valid ingredients.");
   }
 
   const mappedRecipes = mapToFrontendRecipes(

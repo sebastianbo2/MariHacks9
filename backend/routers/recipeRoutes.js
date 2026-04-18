@@ -16,7 +16,7 @@ router.post("/recipes", async (req, res) => {
   try {
     const {
       userRequest,
-      pantryItems,
+      pantryItems = ["salt", "pepper", "vegetable oil", "water"],
       genericIngredientsMarkdown = genericIngredients,
       postcode,
       mealsPerFlyer = 3,

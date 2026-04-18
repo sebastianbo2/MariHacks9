@@ -111,6 +111,13 @@ function toPriceNumber(value) {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function parseNumberFromText(value) {
+  if (typeof value !== "string") return null;
+  const matched = value.match(/[0-9]+(?:[.,][0-9]+)?/);
+  if (!matched) return null;
+  return toPriceNumber(matched[0].replace(",", "."));
+}
+
 export async function getAllGroceries(postalCode) {
   const groceryFlyers = await getGroceryFlyerId(postalCode);
   if (groceryFlyers.length === 0) {
@@ -126,11 +133,14 @@ export async function getAllGroceries(postalCode) {
     const items = Array.isArray(itemsResponse?.data) ? itemsResponse.data : [];
 
     for (const item of items) {
+      const unitText = item.unit ?? item.quantity ?? item.size ?? "unit";
       const normalized = {
         merchant,
         flyer_id: item.flyer_id ?? flyerId,
         name: item.name ?? "Unnamed item",
         price: toPriceNumber(item.price),
+        unit: String(unitText),
+        sold_quantity: parseNumberFromText(String(unitText)) ?? 1,
         valid_from: item.valid_from ?? null,
         valid_to: item.valid_to ?? null,
         store_name: merchant,
