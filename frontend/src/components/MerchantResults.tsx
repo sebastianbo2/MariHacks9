@@ -1,10 +1,10 @@
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, Clock, Users, ChevronDown, ShoppingBag, MapPin } from "lucide-react";
+import { ArrowLeft, Clock, Users, MapPin, X, ShoppingBag, ChefHat, TrendingDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PrepMode } from "@/data/flyerData";
-import type { BackendResponse, Recipe, Ingredient } from "@/App";
+import { BackendResponse, Recipe } from "@/App";
 
 interface Props {
   query: string;
@@ -16,6 +16,7 @@ interface Props {
 
 export function MerchantResults({ query, mode, loading, onBack, data }: Props) {
   const recipes = data as Recipe[];
+  const [activeRecipe, setActiveRecipe] = useState<Recipe | null>(null);
 
   const cheapestPrice = recipes.length
     ? Math.min(...recipes.map((r) => r.priceForRecipe))
@@ -63,17 +64,31 @@ export function MerchantResults({ query, mode, loading, onBack, data }: Props) {
                 key={`${recipe.title}-${i}`}
                 recipe={recipe}
                 isCheapest={recipe.priceForRecipe === cheapestPrice}
+                onClick={() => setActiveRecipe(recipe)}
               />
             ))}
           </motion.div>
         )}
       </main>
+
+      <RecipeModal
+        recipe={activeRecipe}
+        isCheapest={activeRecipe?.priceForRecipe === cheapestPrice}
+        onClose={() => setActiveRecipe(null)}
+      />
     </div>
   );
 }
 
-function RecipeCard({ recipe, isCheapest }: { recipe: Recipe; isCheapest: boolean }) {
-  const [open, setOpen] = useState(false);
+function RecipeCard({
+  recipe,
+  isCheapest,
+  onClick,
+}: {
+  recipe: Recipe;
+  isCheapest: boolean;
+  onClick: () => void;
+}) {
   const totalMinutes = recipe.prepMinutes + recipe.cookMinutes;
 
   return (
@@ -82,9 +97,8 @@ function RecipeCard({ recipe, isCheapest }: { recipe: Recipe; isCheapest: boolea
       transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
       className="overflow-hidden rounded-2xl border border-border bg-card shadow-sm"
     >
-      {/* Main row */}
       <button
-        onClick={() => setOpen((o) => !o)}
+        onClick={onClick}
         className="flex w-full items-start gap-4 px-5 py-5 text-left transition hover:bg-muted/30 sm:px-6"
       >
         {/* Left: title + meta */}
@@ -93,7 +107,7 @@ function RecipeCard({ recipe, isCheapest }: { recipe: Recipe; isCheapest: boolea
             <h2 className="font-display text-lg font-semibold text-charcoal">{recipe.title}</h2>
             {isCheapest && (
               <span className="inline-flex items-center gap-1 rounded-full bg-sage-deep px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cream">
-                Best value
+                <TrendingDown className="h-2.5 w-2.5" /> Best value
               </span>
             )}
           </div>
@@ -104,11 +118,6 @@ function RecipeCard({ recipe, isCheapest }: { recipe: Recipe; isCheapest: boolea
             <span className="flex items-center gap-1">
               <Clock className="h-3.5 w-3.5" />
               {totalMinutes} min
-              {recipe.prepMinutes > 0 && recipe.cookMinutes > 0 && (
-                <span className="text-muted-foreground/60">
-                  ({recipe.prepMinutes}p + {recipe.cookMinutes}c)
-                </span>
-              )}
             </span>
             <span className="flex items-center gap-1">
               <Users className="h-3.5 w-3.5" />
@@ -121,81 +130,168 @@ function RecipeCard({ recipe, isCheapest }: { recipe: Recipe; isCheapest: boolea
           </div>
         </div>
 
-        {/* Right: price + chevron */}
-        <div className="flex shrink-0 flex-col items-end gap-2">
-          <div className="text-right">
-            <p className="font-mono text-xl font-semibold text-charcoal">
-              ${recipe.priceForRecipe.toFixed(2)}
+        {/* Right: price */}
+        <div className="shrink-0 text-right">
+          <p className="font-mono text-xl font-semibold text-charcoal">
+            ${recipe.priceForRecipe.toFixed(2)}
+          </p>
+          {recipe.totalPrice !== recipe.priceForRecipe && (
+            <p className="text-[11px] text-muted-foreground">
+              ${recipe.totalPrice.toFixed(2)} groceries
             </p>
-            {recipe.totalPrice !== recipe.priceForRecipe && (
-              <p className="text-[11px] text-muted-foreground">
-                ${recipe.totalPrice.toFixed(2)} groceries
-              </p>
-            )}
-          </div>
-          <motion.div animate={{ rotate: open ? 180 : 0 }} transition={{ duration: 0.2 }}>
-            <ChevronDown className="h-4 w-4 text-muted-foreground" />
-          </motion.div>
+          )}
         </div>
       </button>
+    </motion.div>
+  );
+}
 
-      {/* Expandable ingredients */}
-      <AnimatePresence initial={false}>
-        {open && (
+function RecipeModal({
+  recipe,
+  isCheapest,
+  onClose,
+}: {
+  recipe: Recipe | null;
+  isCheapest: boolean;
+  onClose: () => void;
+}) {
+  const totalMinutes = recipe ? recipe.prepMinutes + recipe.cookMinutes : 0;
+
+  return (
+    <AnimatePresence>
+      {recipe && (
+        <>
+          {/* Backdrop */}
           <motion.div
-            key="ingredients"
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-            className="overflow-hidden"
-          >
-            <div className="border-t border-border bg-muted/20 px-5 py-4 sm:px-6">
-              <div className="mb-3 flex items-center gap-1.5">
-                <ShoppingBag className="h-3.5 w-3.5 text-sage-deep" />
-                <p className="text-xs font-semibold uppercase tracking-wide text-sage-deep">
-                  Ingredients
-                </p>
-              </div>
-              <ul className="space-y-2">
-                {recipe.ingredients.map((ing, i) => (
-                  <li key={i} className="flex items-center justify-between gap-4">
-                    <div className="flex items-baseline gap-1.5 min-w-0">
-                      <span className="text-sm font-medium text-charcoal truncate">{ing.name}</span>
-                      <span className="text-xs text-muted-foreground shrink-0">
-                        × {ing.usedQuantity}
-                        {ing.usedQuantity !== ing.quantity && (
-                          <span className="text-muted-foreground/60"> of {ing.quantity}</span>
-                        )}
-                      </span>
-                    </div>
-                    <span className="font-mono text-xs font-medium text-charcoal shrink-0">
-                      ${ing.price.toFixed(2)}
-                    </span>
-                  </li>
-                ))}
-              </ul>
+            key="backdrop"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            onClick={onClose}
+            className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm"
+          />
 
-              {/* Total row */}
-              <div className="mt-4 flex items-center justify-between border-t border-border pt-3">
-                <span className="text-xs text-muted-foreground">Recipe cost</span>
-                <span className="font-mono text-sm font-semibold text-charcoal">
-                  ${recipe.priceForRecipe.toFixed(2)}
+          {/* Modal */}
+          <motion.div
+            key="modal"
+            initial={{ opacity: 0, scale: 0.95, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.95, y: 16 }}
+            transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+            className="fixed left-1/2 top-1/2 z-50 max-h-[85vh] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-3xl border border-border bg-card shadow-2xl"
+          >
+            {/* Header */}
+            <div className="border-b border-border px-6 py-5">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 className="font-display text-xl font-semibold text-charcoal">
+                      {recipe.title}
+                    </h2>
+                    {isCheapest && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-sage-deep px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-cream">
+                        <TrendingDown className="h-2.5 w-2.5" /> Best value
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-sm text-muted-foreground">{recipe.description}</p>
+                </div>
+                <button
+                  onClick={onClose}
+                  className="shrink-0 rounded-full p-1.5 text-muted-foreground transition hover:bg-muted hover:text-charcoal"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+
+              {/* Meta pills */}
+              <div className="mt-4 flex flex-wrap gap-2">
+                <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal">
+                  <Clock className="h-3.5 w-3.5 text-sage-deep" />
+                  {recipe.prepMinutes}m prep · {recipe.cookMinutes}m cook · {totalMinutes}m total
+                </span>
+                <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal">
+                  <Users className="h-3.5 w-3.5 text-sage-deep" />
+                  {recipe.numberOfServings} serving{recipe.numberOfServings !== 1 ? "s" : ""}
+                </span>
+                <span className="flex items-center gap-1.5 rounded-full bg-muted px-3 py-1 text-xs font-medium text-charcoal">
+                  <MapPin className="h-3.5 w-3.5 text-sage-deep" />
+                  {recipe.store_name}
                 </span>
               </div>
-              {recipe.totalPrice !== recipe.priceForRecipe && (
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-xs text-muted-foreground">Total groceries</span>
-                  <span className="font-mono text-xs text-muted-foreground">
-                    ${recipe.totalPrice.toFixed(2)}
-                  </span>
+            </div>
+
+            {/* Scrollable body */}
+            <div className="overflow-y-auto" style={{ maxHeight: "calc(85vh - 190px)" }}>
+              {/* Ingredients */}
+              <div className="px-6 py-5">
+                <div className="mb-3 flex items-center gap-1.5">
+                  <ShoppingBag className="h-4 w-4 text-sage-deep" />
+                  <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
+                    Ingredients
+                  </p>
                 </div>
-              )}
+                <ul className="space-y-2.5">
+                  {recipe.ingredients.map((ing, i) => (
+                    <li key={i} className="flex items-center justify-between gap-4">
+                      <div className="flex items-baseline gap-1.5 min-w-0">
+                        <span className="text-sm font-medium text-charcoal truncate">{ing.name}</span>
+                        <span className="text-xs text-muted-foreground shrink-0">
+                          × {ing.usedQuantity}
+                          {ing.usedQuantity !== ing.quantity && (
+                            <span className="text-muted-foreground/50"> of {ing.quantity}</span>
+                          )}
+                        </span>
+                      </div>
+                      <span className="font-mono text-xs font-semibold text-charcoal shrink-0">
+                        ${ing.price.toFixed(2)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <div className="mx-6 border-t border-border" />
+
+              {/* Price breakdown */}
+              <div className="px-6 py-5">
+                <div className="mb-3 flex items-center gap-1.5">
+                  <ChefHat className="h-4 w-4 text-sage-deep" />
+                  <p className="text-xs font-semibold uppercase tracking-wider text-sage-deep">
+                    Cost breakdown
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-muted-foreground">Recipe cost</span>
+                    <span className="font-mono text-sm font-semibold text-charcoal">
+                      ${recipe.priceForRecipe.toFixed(2)}
+                    </span>
+                  </div>
+                  {recipe.totalPrice !== recipe.priceForRecipe && (
+                    <>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-muted-foreground">Total groceries</span>
+                        <span className="font-mono text-sm text-muted-foreground">
+                          ${recipe.totalPrice.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between rounded-xl bg-sage-soft px-3 py-2">
+                        <span className="text-xs font-medium text-sage-deep">You save</span>
+                        <span className="font-mono text-xs font-semibold text-sage-deep">
+                          ${(recipe.totalPrice - recipe.priceForRecipe).toFixed(2)}
+                        </span>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
           </motion.div>
-        )}
-      </AnimatePresence>
-    </motion.div>
+        </>
+      )}
+    </AnimatePresence>
   );
 }
 
